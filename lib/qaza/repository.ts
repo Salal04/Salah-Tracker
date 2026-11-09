@@ -30,7 +30,11 @@ export interface QazaRepository {
   listOutstanding(): Promise<QazaRecord[]>;
   listPendingConfirmation(): Promise<QazaRecord[]>;
   addOperation(operation: QazaOperation): Promise<void>;
+  saveRecordsAndOperations(records: QazaRecord[], operations: QazaOperation[], statistics?: QazaStatistics): Promise<void>;
   listPendingOperations(): Promise<QazaOperation[]>;
+  listPartialOperations(): Promise<QazaOperation[]>;
+  operationExists(operationId: string): Promise<boolean>;
+  updateOperation(operationId: string, update: Partial<QazaOperation>): Promise<void>;
   getStatistics(): Promise<QazaStatistics | null>;
   putStatistics(statistics: QazaStatistics): Promise<void>;
   isDateProcessed(date: string): Promise<boolean>;
@@ -155,9 +159,31 @@ export const createIndexedDbQazaRepository = (options: IndexedDbOptions = {}): Q
       assertOperation(operation);
       await writeRequest(STORE.operations, (store) => store.add(operation));
     },
+    async saveRecordsAndOperations(records, operations, statistics) {
+      records.forEach(assertRecord); operations.forEach(assertOperation);
+      if (statistics) assertStatistics(statistics);
+      const stores = statistics ? [STORE.records, STORE.operations, STORE.statistics] : [STORE.records, STORE.operations];
+      const database = await getDatabase(); const transaction = database.transaction(stores, "readwrite"); const done = transactionDone(transaction);
+      const recordStore = transaction.objectStore(STORE.records); const operationStore = transaction.objectStore(STORE.operations);
+      for (const record of records) recordStore.put(record);
+      for (const operation of operations) operationStore.add(operation);
+      if (statistics) transaction.objectStore(STORE.statistics).put({ key: STATISTICS_KEY, value: statistics } satisfies StoredValue<QazaStatistics>);
+      await done;
+    },
     async listPendingOperations() {
       const rows = await readRequest<unknown[]>(STORE.operations, (store) => store.index("status").getAll("pending"));
       return rows.filter(isQazaOperation);
+    },
+    async listPartialOperations() {
+      const rows = await readRequest<unknown[]>(STORE.operations, (store) => store.index("status").getAll("partial"));
+      return rows.filter(isQazaOperation);
+    },
+    async operationExists(operationId) { return readRequest<IDBValidKey | undefined>(STORE.operations, (store) => store.getKey(operationId)).then((key) => key !== undefined); },
+    async updateOperation(operationId, update) {
+      const database = await getDatabase(); const transaction = database.transaction(STORE.operations, "readwrite"); const done = transactionDone(transaction);
+      const store = transaction.objectStore(STORE.operations); const request = store.get(operationId);
+      request.addEventListener("success", () => { if (isQazaOperation(request.result)) { const next = { ...request.result, ...update, operationId }; assertOperation(next); store.put(next); } }, { once: true });
+      await done;
     },
     async getStatistics() {
       const value = await readRequest<unknown>(STORE.statistics, (store) => store.get(STATISTICS_KEY));
@@ -216,8 +242,22 @@ export const createInMemoryQazaRepository = (): QazaRepository => {
       if (operations.has(operation.operationId)) throw new Error("Qaza operation ID already exists.");
       operations.set(operation.operationId, { ...operation });
     },
+    async saveRecordsAndOperations(recordValues, operationValues, stats) {
+      recordValues.forEach(assertRecord); operationValues.forEach(assertOperation);
+      if (stats) assertStatistics(stats);
+      if (operationValues.some((operation) => operations.has(operation.operationId))) throw new Error("Qaza operation ID already exists.");
+      for (const record of recordValues) records.set(record.id, structuredClone(record));
+      for (const operation of operationValues) operations.set(operation.operationId, structuredClone(operation));
+      if (stats) statistics = structuredClone(stats);
+    },
     async listPendingOperations() {
       return [...operations.values()].filter((operation) => operation.status === "pending").map((operation) => ({ ...operation }));
+    },
+    async listPartialOperations() { return [...operations.values()].filter((operation) => operation.status === "partial").map((operation) => structuredClone(operation)); },
+    async operationExists(operationId) { return operations.has(operationId); },
+    async updateOperation(operationId, update) {
+      const operation = operations.get(operationId); if (!operation) return;
+      const next = { ...operation, ...update, operationId }; assertOperation(next); operations.set(operationId, structuredClone(next));
     },
     async getStatistics() {
       return statistics ? structuredClone(statistics) : null;

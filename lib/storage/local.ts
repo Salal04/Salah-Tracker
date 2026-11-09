@@ -110,6 +110,14 @@ export const writeJson = <T>(key: string, value: T, storage?: StorageLike | null
   }
 };
 
+export const writeJsonStrict = <T>(key: string, value: T, storage?: StorageLike | null): void => {
+  const resolved = resolveStorage(storage);
+  if (!resolved) throw new Error("Browser storage is unavailable.");
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Could not serialize local data.");
+  resolved.setItem(key, serialized);
+};
+
 export const removeKey = (key: string, storage?: StorageLike | null): void => {
   try {
     resolveStorage(storage)?.removeItem(key);

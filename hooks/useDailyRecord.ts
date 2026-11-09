@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import type { CustomNafl, DayMarks, DayTimings, Log } from "@/lib/types";
 import { addDays, dateKey } from "@/lib/dates";
-import { localKeys, readCustomNawafil, readJson, writeCustomNawafil, writeJson } from "@/lib/storage/local";
+import { localKeys, readCustomNawafil, readJson, writeCustomNawafil, writeJson, writeJsonStrict } from "@/lib/storage/local";
 import { getPrayerWindow, prayerIsOnTime } from "@/lib/timings";
 import { reducePrayerMark, type Affirmation } from "@/lib/marks";
 import { DRIVE_SYNC_QUOTA, type SyncSlot } from "@/lib/sync/quota";
+import { commitOptimistically } from "@/lib/sync/optimistic";
 
 const objectValue = <T extends object>(value: unknown): T =>
   value && typeof value === "object" && !Array.isArray(value) ? value as T : {} as T;
@@ -46,14 +47,17 @@ export function useDailyRecord(ready: boolean, day: Date, todayTimings: DayTimin
     const timingKey = ({ fajr: "Fajr", dhuhr: "Dhuhr", asr: "Asr", maghrib: "Maghrib", isha: "Isha" } as Record<string, string>)[id];
     const window = wasDone ? undefined : getPrayerWindow(id, todayTimings, nextDayFajr);
     const next = reducePrayerMark(log, marks, id, { changedAt, markedAt: wasDone ? undefined : changedAt, windowStart: wasDone ? undefined : window?.start.toISOString() ?? null, windowEnd: wasDone ? undefined : window?.end.toISOString() ?? null, onTime: wasDone ? undefined : window ? prayerIsOnTime(id, now, todayTimings, nextDayFajr) === true : false, prayerTime: wasDone ? undefined : timingKey ? todayTimings?.timings[timingKey] : undefined, timezone: wasDone ? undefined : todayTimings?.timezone, timingLocation: wasDone ? undefined : todayTimings?.location }, affirmation);
-    setLog(next.log);
-    setMarks(next.marks);
     const updatedMark = next.marks[id];
     const syncSlot: SyncSlot = DRIVE_SYNC_QUOTA.fardPrayerIds.includes(id as typeof DRIVE_SYNC_QUOTA.fardPrayerIds[number])
       ? { kind: "fard", prayerId: id, windowStart: updatedMark.windowStart, windowEnd: updatedMark.windowEnd }
       : { kind: "nafl" };
-    queueDriveChange(syncSlot);
-    onToast(wasDone ? "Prayer unmarked" : "Alhamdulillah — logged");
+    void commitOptimistically({
+      apply: () => { setLog(next.log); setMarks(next.marks); },
+      persistLocal: () => { writeJsonStrict(localKeys.log(dayKey), next.log); writeJsonStrict(localKeys.marks(dayKey), next.marks); },
+      rollback: () => { setLog(log); setMarks(marks); writeJson(localKeys.log(dayKey), log); writeJson(localKeys.marks(dayKey), marks); },
+      enqueueDrive: () => queueDriveChange(syncSlot),
+    }).then(() => onToast(wasDone ? "Prayer unmarked" : "Alhamdulillah — logged"))
+      .catch(() => onToast("Could not save this prayer on your device. Please try again."));
   };
 
   return { log, setLog, marks, setMarks, syncedMarks, setSyncedMarks, customNawafil, setCustomNawafil, addCustomNafl, loadedDay, togglePrayer };

@@ -25,6 +25,9 @@ import { useQaza } from "@/hooks/useQaza";
 import { useDriveSync } from "@/hooks/useDriveSync";
 import { useRouter } from "next/navigation";
 import type { QazaSetupChoice } from "@/lib/qaza/types";
+import { createGoogleQazaDrive, createQazaQueueWorker } from "@/lib/drive/qaza";
+import { processSyncQueue, resumeQueueOnOnline } from "@/lib/sync/queue";
+import { recoverQazaSync, repairQazaData } from "@/lib/sync/recover";
 const defaultLocation: PrayerLocation = { city: "Karachi", country: "Pakistan", method: 1 };
 const formatPrayerTime = (value?: string, timezone?: string) => {
   if (!value) return "Time unavailable";
@@ -56,6 +59,7 @@ export default function Home() {
   const [startDate, setStartDate] = useState("");
   const [ready, setReady] = useState(false);
   const [toast, setToast] = useState("");
+  const [syncQueuePulse, setSyncQueuePulse] = useState(0);
   const [affirmationPrayer, setAffirmationPrayer] = useState<string | null>(null);
   const [location, setLocation] = useState<PrayerLocation>(defaultLocation);
   const [cityDraft, setCityDraft] = useState(defaultLocation.city);
@@ -67,7 +71,31 @@ export default function Home() {
   const qaza = useQaza(ready, dateKey(new Date()), todayTimings, monthTimings);
   const { qazaDone, setQazaDone, qazaDoneOn, setQazaDoneOn } = qaza;
   const drive = useDriveSync({ ready, day, startDate, setStartDate, prayerLocation: location, log, marks, customNawafil, qazaDone, qazaDoneOn, setProfile, setLog, setMarks, setCustomNawafil: daily.setCustomNawafil, setSyncedMarks, setQazaDone, setQazaDoneOn });
-  const { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, queueDriveChange, connectGoogleDrive, refreshDriveData, requestPrayerSync } = drive;
+  const { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync } = drive;
+  useEffect(() => { if (driveToken) void loadDriveDay(dateKey(day)).catch(() => setToast("This day is still available locally; Drive could not refresh it.")); }, [driveToken, driveDayFileIds, day, loadDriveDay]);
+  useEffect(() => {
+    if (!ready || !driveToken || !driveFileId) return;
+    let active = true; let retryTimer = 0;
+    const port = createGoogleQazaDrive(driveToken, driveFileId);
+    const worker = createQazaQueueWorker(port, qaza.repository, driveFileId);
+    const run = async () => {
+      if (!navigator.onLine) return;
+      try {
+        const recovery = await recoverQazaSync(qaza.repository, worker);
+        if (active && (recovery.recovered.length || recovery.statisticsRebuilt)) setSyncQueuePulse((value) => value + 1);
+        const result = await processSyncQueue(qaza.repository, worker, { isOnline: () => navigator.onLine, onWaiting: () => undefined });
+        if (!active) return;
+        if (result.waiting.length) setToast("Qaza changes are saved on this device and waiting to sync.");
+        if (result.synced.length) { setToast("Qaza data synced to Drive."); setSyncQueuePulse((value) => value + 1); }
+        const queued = [...await qaza.repository.listPendingOperations(), ...await qaza.repository.listPartialOperations()];
+        const next = queued.map((operation) => operation.nextAttemptAt ? Date.parse(operation.nextAttemptAt) : Date.now() + 1000).sort((a, b) => a - b)[0];
+        if (next) retryTimer = window.setTimeout(() => void run(), Math.max(500, next - Date.now()));
+      } catch { if (active) setToast("Qaza data is saved locally; Drive sync will retry when available."); }
+    };
+    void run();
+    const stopOnline = resumeQueueOnOnline(() => void run());
+    return () => { active = false; stopOnline(); window.clearTimeout(retryTimer); };
+  }, [ready, driveToken, driveFileId, qaza.repository, qaza.refreshKey]);
   useEffect(() => {
     const today = dateKey(new Date());
     let firstSavedDay = "";
@@ -140,6 +168,13 @@ export default function Home() {
     if (driveEmail && driveFileId) queueDriveChange();
     setShowProfileEditor(false);
   };
+  const repairQaza = async () => {
+    if (!driveToken || !driveFileId) { setToast("Connect Google Drive before repairing Qaza data."); return; }
+    try {
+      const port = createGoogleQazaDrive(driveToken, driveFileId); const worker = createQazaQueueWorker(port, qaza.repository, driveFileId);
+      await repairQazaData(qaza.repository, worker); setSyncQueuePulse((value) => value + 1); setToast("Qaza statistics rebuilt from yearly records.");
+    } catch { setToast("Repair could not finish. Your local Qaza records are still available."); }
+  };
   const chooseQazaSetup = async (choice: QazaSetupChoice) => {
     const saved = await qaza.saveSetup(choice);
     if (saved.choice === "enter_existing_qaza") router.push("/dashboard/qaza/manual-backlog");
@@ -206,12 +241,12 @@ export default function Home() {
             <PrayerListSection fard={fard} relatedByFard={sunnahMuakkadahByFard} otherNawafil={otherNawafil} customNawafil={customNawafil} log={log} marks={marks} syncedMarks={syncedMarks} isToday={isToday} driveEmail={driveEmail} syncNow={syncNow} onToggle={handlePrayerToggle} onSync={(prayer) => requestPrayerSync(prayer.id, prayer.name)} onAddCustom={(name, rakaat) => { addCustomNafl(name, rakaat); queueDriveChange(); }} />
           </>}
           {activeTab === "times" && <PrayerTimesTab timingStatus={timingStatus} todayTimings={todayTimings} monthTimings={monthTimings} cityDraft={cityDraft} countryDraft={countryDraft} methodDraft={methodDraft} onCityChange={setCityDraft} onCountryChange={setCountryDraft} onMethodChange={setMethodDraft} onSaveLocation={savePrayerLocation} formatTime={formatPrayerTime} />}
-          {activeTab === "qaza" && <><ReviewQueue records={qaza.pendingConfirmations} onAnswer={qaza.answerReview} /><QazaTracker repository={qaza.repository} refreshKey={qaza.refreshKey} onComplete={qaza.complete} /></>}
+          {activeTab === "qaza" && <><ReviewQueue records={qaza.pendingConfirmations} onAnswer={qaza.answerReview} /><QazaTracker repository={qaza.repository} refreshKey={qaza.refreshKey + syncQueuePulse} onComplete={qaza.complete} onLoadYear={loadQazaYear} /></>}
           {activeTab === "insights" && <InsightsTab analysis={displayedAnalysis} analysisSource={analysisSource} fard={fard} nawafil={nawafil} streaks={prayerStreaks} />}
           <footer>Made with intention <span>&bull;</span> Your progress stays on this device.</footer>
         </div>
       </section>
-      {showProfileEditor && <ProfileEditor profile={profile} prayerLocation={location} driveConnected={!!driveEmail && !!driveToken} onSave={saveProfile} onClose={() => setShowProfileEditor(false)} />}
+      {showProfileEditor && <ProfileEditor profile={profile} prayerLocation={location} driveConnected={!!driveEmail && !!driveToken} onSave={saveProfile} onClose={() => setShowProfileEditor(false)} onRepair={() => void repairQaza()} />}
       {affirmationPrayer && <AffirmationDialog onChoose={confirmPrayerMark} onClose={() => setAffirmationPrayer(null)} />}
       {qaza.setupLoaded && !qaza.setup && <SetupWizard onChoose={chooseQazaSetup} />}
       {toast && <div className="toast"><span><Check size={14} /></span>{toast}</div>}

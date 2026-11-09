@@ -98,6 +98,7 @@ export function useQaza(ready: boolean, today: string, todayTimings: DayTimings 
     try {
       const updated = await answerQazaReview(repository, recordId, answer);
       await reconcile(repository);
+      setRefreshKey((value) => value + 1);
       const [pending, outstanding] = await Promise.all([repository.listPendingConfirmation(), repository.listOutstanding()]);
       setPendingConfirmations(setup ? pending.filter((record) => isWithinQazaTrackingPeriod(record, setup.trackingStartDate)) : []);
       setOutstandingQaza(setup ? outstanding.filter((record) => isWithinQazaTrackingPeriod(record, setup.trackingStartDate)).map(toItem).filter((item): item is QazaItem => item !== null) : []);

@@ -24,7 +24,7 @@ function optimizeImage(file: File): Promise<string> {
   });
 }
 
-export function ProfileEditor({ profile, prayerLocation, driveConnected, required = false, onSave, onClose, onConnectGoogle }: { profile: UserProfile; prayerLocation: PrayerLocation; driveConnected: boolean; required?: boolean; onSave: (profile: UserProfile) => void; onClose: () => void; onConnectGoogle?: () => void }) {
+export function ProfileEditor({ profile, prayerLocation, driveConnected, required = false, onSave, onClose, onConnectGoogle, onRepair }: { profile: UserProfile; prayerLocation: PrayerLocation; driveConnected: boolean; required?: boolean; onSave: (profile: UserProfile) => void; onClose: () => void; onConnectGoogle?: () => void; onRepair?: () => void }) {
   const [name, setName] = useState(profile.name);
   const [image, setImage] = useState(profile.image);
   const [gender, setGender] = useState(profile.gender || "");
@@ -54,6 +54,7 @@ export function ProfileEditor({ profile, prayerLocation, driveConnected, require
       <small className="profile-storage-note"><UserRound size={13} />{driveConnected ? "Saved in your browser and Google Drive backup." : "Saved only in this browser until Google Drive is connected."}</small>
       {error && <p className="profile-error" role="alert">{error}</p>}
       {required && onConnectGoogle && !driveConnected && <button type="button" className="profile-google-button" onClick={onConnectGoogle}>Continue with Google to fill your profile</button>}
+      {!required && driveConnected && onRepair && <button type="button" className="profile-google-button" onClick={onRepair}>Repair Qaza data</button>}
       <div className="profile-modal-actions">{!required && <button type="button" className="profile-cancel" onClick={onClose}>Cancel</button>}<button type="button" className="profile-save" disabled={processing || !name.trim()} onClick={() => onSave({ name: name.trim(), image, ...(gender.trim() ? { gender: gender.trim() } : {}), ...(schoolOfThought ? { schoolOfThought } : {}), location: { city: prayerLocation.city, country: prayerLocation.country } })}><Check size={15} />{required ? "Continue" : "Save profile"}</button></div>
     </section>
   </div>;

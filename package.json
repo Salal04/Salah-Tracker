@@ -14,7 +14,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "test": "tsc lib/dates.ts lib/storage/local.ts lib/analysis.ts lib/timings.ts lib/marks.ts lib/day-backup.ts lib/profile.ts lib/sync/quota.ts lib/qaza/types.ts lib/qaza/validate.ts lib/qaza/repository.ts lib/qaza/detect.ts lib/qaza/review.ts lib/qaza/setup.ts lib/qaza/manual.ts lib/qaza/stats.ts lib/qaza/complete.ts lib/qaza/dashboard.ts --target ES2017 --module commonjs --outDir node_modules/.cache/salah-tracker-tests --skipLibCheck --strict && node --test"
+    "test": "tsc lib/dates.ts lib/storage/local.ts lib/analysis.ts lib/timings.ts lib/marks.ts lib/day-backup.ts lib/profile.ts lib/sync/quota.ts lib/sync/merge.ts lib/sync/queue.ts lib/sync/optimistic.ts lib/qaza/types.ts lib/qaza/validate.ts lib/qaza/repository.ts lib/qaza/detect.ts lib/qaza/review.ts lib/qaza/setup.ts lib/qaza/manual.ts lib/qaza/stats.ts lib/qaza/complete.ts lib/qaza/dashboard.ts lib/drive/client.ts lib/drive/lazy.ts lib/drive/qaza.ts lib/sync/recover.ts --target ES2017 --module commonjs --outDir node_modules/.cache/salah-tracker-tests --skipLibCheck --strict && node --test"
   },
   "dependencies": {
     "@prisma/adapter-neon": "^7.10.1",

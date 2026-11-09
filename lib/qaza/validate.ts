@@ -58,10 +58,15 @@ export const isQazaOperation = (value: unknown): value is QazaOperation => {
     && isNonEmptyString(value.recordId)
     && (value.year === null || isYear(value.year))
     && isTimestamp(value.createdAt)
-    && (value.status === "pending" || value.status === "synced" || value.status === "failed")
+    && (value.status === "pending" || value.status === "partial" || value.status === "synced" || value.status === "failed")
     && (value.record === undefined || isQazaRecord(value.record))
     && (value.previousRecord === undefined || isQazaRecord(value.previousRecord))
-    && (value.adjustmentReason === undefined || value.adjustmentReason === "entered_by_mistake" || value.adjustmentReason === "completed_by_mistake");
+    && (value.adjustmentReason === undefined || value.adjustmentReason === "entered_by_mistake" || value.adjustmentReason === "completed_by_mistake")
+    && (value.attemptCount === undefined || isCount(value.attemptCount))
+    && (value.nextAttemptAt === undefined || isTimestamp(value.nextAttemptAt))
+    && (value.yearWritten === undefined || typeof value.yearWritten === "boolean")
+    && (value.statisticsWritten === undefined || typeof value.statisticsWritten === "boolean")
+    && (value.syncSlot === undefined || (isObject(value.syncSlot) && (value.syncSlot.kind === "nafl" || (value.syncSlot.kind === "fard" && isNonEmptyString(value.syncSlot.prayerId)))));
 };
 
 export const isQazaStatistics = (value: unknown): value is QazaStatistics => {

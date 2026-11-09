@@ -29,7 +29,7 @@ export type QazaRecord = {
 };
 
 export type QazaOperationType = "ADD_QAZA" | "COMPLETE_QAZA" | "CONFIRM_QAZA" | "CONFIRM_OFFERED" | "CONFIRM_MISSED" | "DEFER_CONFIRMATION" | "ADJUST" | "ADJUST_QAZA";
-export type QazaOperationStatus = "pending" | "synced" | "failed";
+export type QazaOperationStatus = "pending" | "partial" | "synced" | "failed";
 
 export type QazaOperation = {
   operationId: string;
@@ -41,6 +41,11 @@ export type QazaOperation = {
   record?: QazaRecord;
   previousRecord?: QazaRecord;
   adjustmentReason?: "entered_by_mistake" | "completed_by_mistake";
+  attemptCount?: number;
+  nextAttemptAt?: string;
+  yearWritten?: boolean;
+  statisticsWritten?: boolean;
+  syncSlot?: { kind: "fard"; prayerId: string; windowStart?: string | null; windowEnd?: string | null } | { kind: "nafl" };
 };
 
 export type QazaPrayerStatistics = {

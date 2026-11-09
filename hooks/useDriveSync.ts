@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CustomNafl, DayMarks, GoogleDriveFile, Log, ReadableTrackerDayBackup, TrackerAnalysis, TrackerBackup, TrackerDayBackup, TrackerSummary, UserProfile } from "@/lib/types";
 import { addDays, dateKey, DATE_STRING_REGEX } from "@/lib/dates";
 import { localKeys, localStore, logDateFromKey, marksDateFromKey, customNawafilDateFromKey, isSyncedMarksKey, readCustomNawafil, readJson, writeCustomNawafil, writeJson } from "@/lib/storage/local";
 import { calculateTrackerAnalysis, mergeTrackerData } from "@/lib/analysis";
-import { downloadDriveJson, findDriveFileByName, listDriveFiles, renameDriveFile, uploadDriveJson } from "@/lib/drive/client";
+import { downloadDriveJson, findDriveFileByName, listDriveFiles, renameDriveFile, uploadDriveJson, updateDriveJsonWithRetry } from "@/lib/drive/client";
 import { migrateTrackerDayBackup } from "@/lib/day-backup";
 import { normalizeUserProfile } from "@/lib/profile";
 import { claimSyncQuotaSlots, DRIVE_SYNC_QUOTA, parseSyncQuotaState, quotaFailureMessage, type SyncSlot } from "@/lib/sync/quota";
+import { mergeDailyFile, mergeSummary } from "@/lib/sync/merge";
+import { createGoogleQazaDrive, downloadQazaYear, ensureQazaFiles } from "@/lib/drive/qaza";
+import { fetchRequestedDriveFiles } from "@/lib/drive/lazy";
+import type { QazaRepository } from "@/lib/qaza/repository";
+import type { QazaRecord } from "@/lib/qaza/types";
 
 declare global {
   interface Window {
@@ -46,6 +51,10 @@ const saveAggregateStats = async (token: string, analysis: TrackerAnalysis) => {
   if (!response.ok) throw new Error("Could not save aggregate stats to Neon.");
 };
 const readProfile = () => normalizeUserProfile(readJson<unknown>(localKeys.userProfile, null));
+const versionKey = (id: string) => `salah-drive-version-${id}`;
+const readVersion = (id: string): { etag?: string | null; version?: string | null } => readJson(versionKey(id), {});
+const writeVersion = (id: string, value: { etag?: string | null; version?: string | null }) => writeJson(versionKey(id), value);
+const driveCacheIsFresh = (date: string) => { const saved = Date.parse(localStore.getItem(localKeys.driveDayCached(date)) || ""); return Number.isFinite(saved) && Date.now() - saved < 86_400_000; };
 
 type Args = {
   ready: boolean; day: Date; startDate: string; setStartDate: (value: string) => void;
@@ -161,15 +170,26 @@ export function useDriveSync(args: Args) {
       writeJson(localKeys.syncedMarks(date), synced);
     }
   };
-  const summary = (backup: TrackerBackup, dailyFileIds: Record<string, string>): TrackerSummary => ({ version: 1, startDate: backup.startDate, qazaTotals: { added: backup.qazaDone.length, completed: backup.qazaDone.length, outstanding: 0 }, profile: backup.profile, analysis: backup.analysis || calculateTrackerAnalysis(backup, dateKey(new Date())), dailyFileIds });
+  const summary = (backup: TrackerBackup, dailyFileIds: Record<string, string>): TrackerSummary => ({ version: 1, updatedAt: new Date().toISOString(), startDate: backup.startDate, profile: backup.profile, analysis: backup.analysis || calculateTrackerAnalysis(backup, dateKey(new Date())), dailyFileIds });
+  const saveDayFile = async (token: string, fileId: string | null, date: string, data: TrackerDayBackup): Promise<string> => {
+    const name = dayFileName(date);
+    if (!fileId) return uploadDriveJson(token, null, name, data);
+    const result = await updateDriveJsonWithRetry({ token, fileId, name, data, etag: readVersion(fileId).etag, merge: mergeDailyFile });
+    writeVersion(fileId, { etag: result.etag, version: result.version });
+    return fileId;
+  };
+  const saveSummaryFile = async (token: string, fileId: string, data: TrackerSummary): Promise<void> => {
+    const result = await updateDriveJsonWithRetry({ token, fileId, name: SUMMARY, data, etag: readVersion(fileId).etag, merge: mergeSummary });
+    writeVersion(fileId, { etag: result.etag, version: result.version });
+  };
   const ensureDailyFiles = async (token: string, known: Record<string, string>, backup: TrackerBackup, beforeWrite: () => Promise<void>) => {
     const dates = [...new Set([...Object.keys(backup.logs || {}), ...Object.keys(backup.marks || {}), ...Object.keys(backup.customNawafil || {})])].filter((date) => DATE_STRING_REGEX.test(date)).sort();
     const next = { ...known };
     for (let index = 0; index < dates.length; index += 8) await Promise.all(dates.slice(index, index + 8).map(async (date) => {
       if (next[date]) return;
       await beforeWrite();
-      next[date] = await uploadDriveJson(token, null, dayFileName(date), { version: 3, date, log: backup.logs[date] || {}, marks: backup.marks?.[date] || {}, customNawafil: backup.customNawafil?.[date] || [] });
-      localStore.setItem(localKeys.driveDayCached(date), "1");
+      next[date] = await saveDayFile(token, null, date, { version: 3, date, log: backup.logs[date] || {}, marks: backup.marks?.[date] || {}, customNawafil: backup.customNawafil?.[date] || [] });
+      localStore.setItem(localKeys.driveDayCached(date), new Date().toISOString());
     }));
     return next;
   };
@@ -324,12 +344,11 @@ export function useDriveSync(args: Args) {
       void (async () => {
         const nextIds = { ...driveDayFileIds };
         for (const syncDate of datesToSync) {
-          const dayId = await uploadDriveJson(driveToken, nextIds[syncDate] || null, dayFileName(syncDate), { version: 3, date: syncDate, log: backup.logs[syncDate] || {}, marks: backup.marks?.[syncDate] || {}, customNawafil: backup.customNawafil?.[syncDate] || [] });
+          const dayId = await saveDayFile(driveToken, nextIds[syncDate] || null, syncDate, { version: 3, date: syncDate, log: backup.logs[syncDate] || {}, marks: backup.marks?.[syncDate] || {}, customNawafil: backup.customNawafil?.[syncDate] || [] });
           nextIds[syncDate] = dayId;
-          localStore.setItem(localKeys.driveDayCached(syncDate), "1");
+          localStore.setItem(localKeys.driveDayCached(syncDate), new Date().toISOString());
         }
-        const summaryId = await uploadDriveJson(driveToken, driveFileId, SUMMARY, summary(backup, nextIds));
-        if (summaryId !== driveFileId) { localStore.setItem(localKeys.driveFileId, summaryId); setDriveFileId(summaryId); }
+        await saveSummaryFile(driveToken, driveFileId, summary(backup, nextIds));
         writeJson(localKeys.driveDayFileIds, nextIds); setDriveDayFileIds(nextIds);
         const analysis = backup.analysis!;
         writeJson(localKeys.driveAnalysis(driveEmail), analysis); localStore.setItem(localKeys.driveAnalysisVersion, "3"); localStore.setItem(localKeys.driveFetchedDay, today);
@@ -422,18 +441,26 @@ export function useDriveSync(args: Args) {
         }
         let id: string;
         if (file) {
-          const { data } = await downloadDriveJson<TrackerSummary | TrackerBackup>(token, file.id, "Could not download your tracker from Drive.");
+          const summaryDownload = await downloadDriveJson<TrackerSummary | TrackerBackup>(token, file.id, "Could not download your tracker from Drive.");
+          const data = summaryDownload.data;
+          writeVersion(file.id, { etag: summaryDownload.etag, version: summaryDownload.version });
           let downloaded: TrackerBackup;
           if (file.name === SUMMARY) {
             const sum = data as TrackerSummary; ids = sum.dailyFileIds && typeof sum.dailyFileIds === "object" ? sum.dailyFileIds : ids;
-              const logs: Record<string, Log> = {}; const allMarks: Record<string, DayMarks> = {}; const allCustomNawafil: Record<string, CustomNafl[]> = {};
-            await Promise.all(Object.entries(ids).map(async ([date, dayId]) => {
-              if (!forceRefresh && localStore.getItem(localKeys.driveDayCached(date)) === "1") { logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); return; }
-              const { data: raw, status } = await downloadDriveJson<ReadableTrackerDayBackup>(token, dayId, `Could not download the ${date} tracker file from Drive.`, [404]);
-              if (status === 404) { delete ids[date]; logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); return; }
-              const record = migrateTrackerDayBackup(raw as ReadableTrackerDayBackup);
-              if (record.date === date) { logs[date] = record.log || {}; allMarks[date] = record.marks || {}; allCustomNawafil[date] = record.customNawafil || []; writeJson(localKeys.log(date), logs[date]); writeJson(localKeys.marks(date), allMarks[date]); writeCustomNawafil(date, allCustomNawafil[date]); localStore.setItem(localKeys.driveDayCached(date), "1"); }
-            }));
+            const logs: Record<string, Log> = {}; const allMarks: Record<string, DayMarks> = {}; const allCustomNawafil: Record<string, CustomNafl[]> = {};
+            const datesToLoad = [...new Set([today, dateKey(day)])];
+            const toFetch = datesToLoad.filter((date) => ids[date] && (forceRefresh || !driveCacheIsFresh(date)));
+            const remoteDays = await fetchRequestedDriveFiles(ids, toFetch, (id, date) => downloadDriveJson<ReadableTrackerDayBackup>(token, id, `Could not download the ${date} tracker file from Drive.`, [404]));
+            for (const date of datesToLoad) {
+              const dayId = ids[date];
+              if (!forceRefresh && driveCacheIsFresh(date)) { logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); continue; }
+              if (!dayId) { logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); continue; }
+              const dayDownload = remoteDays[date]; if (!dayDownload) continue;
+              writeVersion(dayId, { etag: dayDownload.etag, version: dayDownload.version });
+              if (dayDownload.status === 404 || !dayDownload.data) { delete ids[date]; logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); continue; }
+              const record = migrateTrackerDayBackup(dayDownload.data);
+              if (record.date === date) { logs[date] = record.log || {}; allMarks[date] = record.marks || {}; allCustomNawafil[date] = record.customNawafil || []; writeJson(localKeys.log(date), logs[date]); writeJson(localKeys.marks(date), allMarks[date]); writeCustomNawafil(date, allCustomNawafil[date]); localStore.setItem(localKeys.driveDayCached(date), new Date().toISOString()); }
+            }
             downloaded = { startDate: sum.startDate, logs, marks: allMarks, customNawafil: allCustomNawafil, qazaDone: sum.qazaDone || [], qazaDoneOn: sum.qazaDoneOn || {}, profile: sum.profile, analysis: sum.analysis };
           } else downloaded = data as TrackerBackup;
           const validStart = DATE_STRING_REGEX.test(downloaded.startDate) ? downloaded.startDate : (localStore.getItem(localKeys.startDate) || today);
@@ -441,14 +468,14 @@ export function useDriveSync(args: Args) {
           setDriveFetchedDay(today);
           const local = collect(localStore.getItem(localKeys.startDate) || validStart, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil);
           const localPending = sameAccount ? Number(localStore.getItem(localKeys.drivePendingChanges)) || 0 : 0;
-          const needsAnalysis = file.name === SUMMARY || downloaded.analysis?.version !== 2 || !downloaded.qazaDoneOn || !downloaded.marks;
+          const needsAnalysis = file.name !== SUMMARY && (downloaded.analysis?.version !== 2 || !downloaded.qazaDoneOn || !downloaded.marks);
           const needsProfileLocation = !downloaded.profile?.location || downloaded.profile.location.city !== prayerLocation.city || downloaded.profile.location.country !== prayerLocation.country;
           const pending = Math.max(localPending, needsAnalysis || !downloaded.profile || needsProfileLocation || !sameAccount ? 1 : 0);
           const backup = !sameAccount || localPending > 0 ? mergeTrackerData(remote, local) : remote;
-          const analysis = calculateTrackerAnalysis(backup, today); writeJson(localKeys.driveAnalysis(email), analysis); setDriveAnalysis(analysis);
+          const analysis = file.name === SUMMARY && isAnalysis(downloaded.analysis) ? downloaded.analysis : calculateTrackerAnalysis(backup, today); writeJson(localKeys.driveAnalysis(email), analysis); setDriveAnalysis(analysis);
           void saveAggregateStats(token, analysis).catch(() => setDriveStatus("Drive data is available, but aggregate stats could not be saved to Neon."));
-          ids = await ensureDailyFiles(token, ids, backup, reserveBootstrapQuota);
-          if (file.name === LEGACY) { await reserveBootstrapQuota(); id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids)); await renameDriveFile(token, file.id, ARCHIVE); } else id = file.id;
+          if (file.name !== SUMMARY) ids = await ensureDailyFiles(token, ids, backup, reserveBootstrapQuota);
+          if (file.name === LEGACY) { await reserveBootstrapQuota(); id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids)); await renameDriveFile(token, file.id, ARCHIVE, readVersion(file.id).etag); } else id = file.id;
           const minimumDate = backup.startDate; restore(backup, minimumDate);
           setProfile(readProfile() || { name: "", image: "" }); recordSynced(remote);
           setStartDate(minimumDate); setLog(readDayLog(dateKey(day))); setMarks(readDayMarks(dateKey(day))); setCustomNawafil(readCustomNawafil(dateKey(day))); setSyncedMarks(readSynced(dateKey(day)));
@@ -480,9 +507,26 @@ export function useDriveSync(args: Args) {
     }
     connectGoogleDrive("", true);
   };
+  const loadDriveDay = useCallback(async (date: string) => {
+    if (!driveToken || !DATE_STRING_REGEX.test(date) || driveCacheIsFresh(date)) return;
+    const fileId = driveDayFileIds[date]; if (!fileId) return;
+    const result = await downloadDriveJson<ReadableTrackerDayBackup>(driveToken, fileId, `Could not download the ${date} tracker file from Drive.`, [404]);
+    writeVersion(fileId, { etag: result.etag, version: result.version });
+    if (result.status === 404 || !result.data) return;
+    const record = migrateTrackerDayBackup(result.data); if (record.date !== date) return;
+    writeJson(localKeys.log(date), record.log || {}); writeJson(localKeys.marks(date), record.marks || {}); writeCustomNawafil(date, record.customNawafil || []);
+    localStore.setItem(localKeys.driveDayCached(date), new Date().toISOString());
+    if (date === dateKey(day)) { setLog(record.log || {}); setMarks(record.marks || {}); setCustomNawafil(record.customNawafil || []); setSyncedMarks(readSynced(date)); }
+  }, [driveToken, driveDayFileIds, day, setLog, setMarks, setCustomNawafil, setSyncedMarks]);
+  const loadQazaYear = useCallback(async (repository: QazaRepository, year: number): Promise<QazaRecord[]> => {
+    if (!driveToken || !driveFileId) return repository.getYear(year);
+    const port = createGoogleQazaDrive(driveToken, driveFileId);
+    await ensureQazaFiles(port, repository, driveFileId, [year]);
+    return downloadQazaYear(port, repository, year);
+  }, [driveToken, driveFileId]);
   const requestPrayerSync = (prayerId: string, prayerName: string) => {
     if (!driveToken || !driveFileId || !marks[prayerId] || marks[prayerId].changedAt === readSynced(dateKey(day))[prayerId]) return;
     setSyncPrayerId(prayerId); setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
   };
-  return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, requestPrayerSync };
+  return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync };
 }

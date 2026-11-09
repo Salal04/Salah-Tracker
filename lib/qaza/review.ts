@@ -1,5 +1,6 @@
 import type { QazaRepository } from "./repository";
 import type { QazaOperation, QazaRecord } from "./types";
+import { applyOperation, reconcile } from "./stats";
 
 export type QazaReviewAnswer = "yes" | "no" | "not_sure";
 
@@ -33,14 +34,14 @@ export const answerQazaReview = async (
     createdAt,
     status: "pending",
   };
-  await repository.addOperation(operation);
-
   const reviewed: QazaRecord = answer === "yes"
     ? { ...record, status: "offered", offeredAt: createdAt }
     : answer === "no"
       ? { ...record, status: "outstanding" }
       : record;
 
-  if (reviewed.status !== record.status) await repository.putRecords([reviewed]);
+  const previousStats = (await repository.getStatistics()) || await reconcile(repository);
+  const stateOperation: QazaOperation = { ...operation, previousRecord: record, record: reviewed };
+  await repository.saveRecordsAndOperations(reviewed.status !== record.status ? [reviewed] : [], [stateOperation], applyOperation(previousStats, stateOperation));
   return reviewed;
 };

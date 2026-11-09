@@ -13,15 +13,8 @@ export async function completeQaza(repository: QazaRepository, recordId: string,
     completionHistory: [...(record.completionHistory || []), { offeredAt: at, completedAt: at, affirmation }] };
   const operation: QazaOperation = { operationId, type: "COMPLETE_QAZA", recordId, year: record.year, createdAt: at, status: "pending", previousRecord: record, record: updated };
   const stats = (await repository.getStatistics()) || await reconcile(repository);
-  try { await repository.addOperation(operation); } catch (error) {
-    const savedOperation = (await repository.listPendingOperations()).some((candidate) => candidate.operationId === operationId);
-    if (!savedOperation) {
-      if ((await repository.getById(recordId))?.status === "completed") return repository.getById(recordId);
-      throw error;
-    }
-  }
-  await repository.putRecords([updated]);
-  await repository.putStatistics(applyOperation(stats, operation));
+  try { await repository.saveRecordsAndOperations([updated], [operation], applyOperation(stats, operation)); }
+  catch (error) { const current = await repository.getById(recordId); if (current?.status === "completed") return current; throw error; }
   return updated;
 }
 
@@ -39,7 +32,6 @@ export async function adjustQaza(repository: QazaRepository, recordId: string, r
     ...(reason === "completed_by_mistake" ? { offeredAt: undefined, completedAt: undefined, affirmation: undefined } : {}) };
   const operation: QazaOperation = { operationId, type: "ADJUST", adjustmentReason: reason, recordId, year: record.year, createdAt: at, status: "pending", previousRecord: record, record: updated };
   const stats = (await repository.getStatistics()) || await reconcile(repository);
-  await repository.addOperation(operation); await repository.putRecords([updated]);
-  await repository.putStatistics(applyOperation(stats, operation));
+  await repository.saveRecordsAndOperations([updated], [operation], applyOperation(stats, operation));
   return updated;
 }

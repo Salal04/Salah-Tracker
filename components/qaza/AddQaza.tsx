@@ -50,6 +50,7 @@ export function AddQaza({ onSave }: { onSave: (records: QazaRecord[]) => Promise
     if (!records || saving) return;
     setSaving(true);
     setError("");
+    setSavedCount(records.length);
     try {
       await onSave(records);
       setSavedCount(records.length);
@@ -59,6 +60,7 @@ export function AddQaza({ onSave }: { onSave: (records: QazaRecord[]) => Promise
       setYear("");
       setDateKnown(false);
     } catch {
+      setSavedCount(0);
       setError("Your Qaza records could not be saved. Please try again.");
     } finally {
       setSaving(false);
@@ -92,6 +94,6 @@ export function AddQaza({ onSave }: { onSave: (records: QazaRecord[]) => Promise
       <button className="add-qaza-save" type="submit">Review before saving</button>
     </form>}
     {records && error && <p className="add-qaza-error" role="alert">{error}</p>}
-    {savedCount > 0 && <p className="add-qaza-success" role="status">Added {savedCount} individual outstanding Qaza records.</p>}
+    {savedCount > 0 && <p className="add-qaza-success" role="status">{saving ? `Adding ${savedCount} records to your local Qaza list…` : `Added ${savedCount} individual outstanding Qaza records.`}</p>}
   </section>;
 }

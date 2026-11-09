@@ -75,4 +75,14 @@ Baseline requested for this documentation task, after documentation changes and 
 - Qaza records and operations are kept in IndexedDB. Qaza is not sent to ranking endpoints. Newly written Drive summaries include aggregate Qaza totals only; legacy summary fields are still accepted during restore for compatibility.
 - School of thought remains an optional profile setting. lib/qaza/rules.ts provides a preference context hook point without implementing religious rulings. The Qaza interface states that it is a personal tracker, not a source of religious rulings.
 
-These changes do not migrate historical legacy completion IDs into individual IndexedDB Qaza records. Drive sync for the Qaza operation queue is not implemented yet; the queue remains local and pending.
+Historical legacy completion IDs are not automatically migrated into individual Qaza records; users still need to add backlog entries through the Qaza setup flow.
+
+## Qaza Drive synchronization update
+
+- Added Drive folder and file discovery for Salah Tracker, qaza-record-YYYY.json (and an undated backlog file), and qaza-statistics.json. Their IDs are kept in the summary and IndexedDB metadata.
+- Qaza history downloads only the selected year. Dashboard connection now requests today's file and the currently opened day; other indexed days load on demand and use a one-day local cache.
+- Downloaded Drive ETags and versions are cached for Qaza files in IndexedDB metadata and for daily/summary files in browser storage. Updates use If-Match; HTTP 412 retries once after merging the latest remote content.
+- Added an IndexedDB operation queue with file-year batching, retry backoff and jitter, offline pause/resume, persisted partial phases, and the existing five-fard plus one-nafl slot rules for daily file operations.
+- Startup recovery finishes partial Qaza operations and reconciles statistics from yearly records. Profile settings now include a Repair Qaza data action.
+- Qaza local record, operation, and statistics changes use transactions; UI state is optimistic and rolls back after local persistence errors. Drive failures leave local data queued and visible as waiting to sync.
+- Added fake Drive, fake-clock queue, conflict merge, lazy-load request-count, recovery, and optimistic rollback tests.
