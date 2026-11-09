@@ -64,3 +64,15 @@ Baseline requested for this documentation task, after documentation changes and 
 - `npm run lint` (invoked as `npm.cmd run lint` because PowerShell blocks `npm.ps1`): failed before linting. ESLint 9.39.5 raised `TypeError: Converting circular structure to JSON` while validating the repository ESLint configuration; the circular path included `configs.flat.plugins.react`.
 - `npm run build` (invoked as `npm.cmd run build`): passed. Next.js 16.4.5 compiled successfully, TypeScript completed, and static pages were generated for `/`, `/_not-found`, and `/dashboard`.
 
+
+## Qaza module updates
+
+- Replaced the Qaza dashboard with local IndexedDB totals, prayer balances, oldest-first suggestions (undated records last), per-prayer outstanding lists, history, and statistics views.
+- Added year-filtered Qaza history with prayer/status/date/search filters, paging, completion details, affirmation display, and confirmation-gated correction actions.
+- Added completion confirmation with an optional affirmation choice. Completion updates the original record, queues a unique operation, maintains completion history, and updates local statistics; repeated completion requests do not create duplicate operations.
+- Added ADJUST audit operations. Mistaken outstanding entries become voided and leave statistics; mistaken completions return to outstanding with the original completion retained as reversed history.
+- Statistics distinguish originating year from completion year, count source and affirmation totals, and can be reconciled from the local repository.
+- Qaza records and operations are kept in IndexedDB. Qaza is not sent to ranking endpoints. Newly written Drive summaries include aggregate Qaza totals only; legacy summary fields are still accepted during restore for compatibility.
+- School of thought remains an optional profile setting. lib/qaza/rules.ts provides a preference context hook point without implementing religious rulings. The Qaza interface states that it is a personal tracker, not a source of religious rulings.
+
+These changes do not migrate historical legacy completion IDs into individual IndexedDB Qaza records. Drive sync for the Qaza operation queue is not implemented yet; the queue remains local and pending.

@@ -161,7 +161,7 @@ export function useDriveSync(args: Args) {
       writeJson(localKeys.syncedMarks(date), synced);
     }
   };
-  const summary = (backup: TrackerBackup, dailyFileIds: Record<string, string>): TrackerSummary => ({ version: 1, startDate: backup.startDate, qazaDone: backup.qazaDone, qazaDoneOn: backup.qazaDoneOn || {}, profile: backup.profile, analysis: backup.analysis || calculateTrackerAnalysis(backup, dateKey(new Date())), dailyFileIds });
+  const summary = (backup: TrackerBackup, dailyFileIds: Record<string, string>): TrackerSummary => ({ version: 1, startDate: backup.startDate, qazaTotals: { added: backup.qazaDone.length, completed: backup.qazaDone.length, outstanding: 0 }, profile: backup.profile, analysis: backup.analysis || calculateTrackerAnalysis(backup, dateKey(new Date())), dailyFileIds });
   const ensureDailyFiles = async (token: string, known: Record<string, string>, backup: TrackerBackup, beforeWrite: () => Promise<void>) => {
     const dates = [...new Set([...Object.keys(backup.logs || {}), ...Object.keys(backup.marks || {}), ...Object.keys(backup.customNawafil || {})])].filter((date) => DATE_STRING_REGEX.test(date)).sort();
     const next = { ...known };

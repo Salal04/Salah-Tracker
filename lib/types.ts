@@ -123,8 +123,11 @@ export type ReadableTrackerDayBackup = TrackerDayBackup | TrackerDayBackupV2 | T
 export type TrackerSummary = {
   version: 1;
   startDate: string;
-  qazaDone: string[];
-  qazaDoneOn: Record<string, string>;
+  /** Aggregate only; individual Qaza records remain in the private local repository. */
+  qazaTotals?: { added: number; completed: number; outstanding: number };
+  /** Legacy fields are accepted only when reading older Drive summaries. */
+  qazaDone?: string[];
+  qazaDoneOn?: Record<string, string>;
   profile?: UserProfile;
   analysis: TrackerAnalysis;
   dailyFileIds: Record<string, string>;
