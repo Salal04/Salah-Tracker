@@ -12,7 +12,7 @@ export default function HomePage() {
     <main className="landing-page">
       <header className="landing-header">
         <Link className="landing-brand" href="/" aria-label="Salah home"><span className="brand-mark"><Moon size={19} fill="currentColor" /></span><span>Salah<span className="brand-dot">.</span></span></Link>
-        <nav className="landing-nav" aria-label="Main navigation"><a href="#about">About</a><a href="#features">Features</a><Link className="landing-nav-cta" href="/dashboard">Go to your dashboard <ArrowRight size={15} /></Link></nav>
+        <nav className="landing-nav" aria-label="Main navigation"><a href="#about">About</a><a href="#features">Features</a><Link href="/community">Community</Link><Link className="landing-nav-cta" href="/dashboard">Go to your dashboard <ArrowRight size={15} /></Link></nav>
       </header>
 
       <section className="landing-hero" id="about">
@@ -33,7 +33,7 @@ export default function HomePage() {
       </section>
 
       <section className="landing-bottom"><div><span className="landing-eyebrow">YOUR NEXT MOMENT STARTS HERE</span><h2>Start where you are.</h2><p>Open your dashboard and take today one prayer at a time.</p></div><Link className="landing-primary" href="/dashboard">Go to your dashboard <ArrowRight size={17} /></Link></section>
-      <footer className="landing-footer"><Link className="landing-brand footer-brand" href="/"><span className="brand-mark"><Moon size={16} fill="currentColor" /></span><span>Salah<span className="brand-dot">.</span></span></Link><nav className="landing-footer-links" aria-label="Legal"><Link href="/privacy">Privacy Policy</Link><Link href="/terms">Terms of Service</Link></nav><span>Made with intention <Sparkles size={12} className="footer-spark" /></span><span>Prayer is a moment to return.</span></footer>
+      <footer className="landing-footer"><Link className="landing-brand footer-brand" href="/"><span className="brand-mark"><Moon size={16} fill="currentColor" /></span><span>Salah<span className="brand-dot">.</span></span></Link><nav className="landing-footer-links" aria-label="Legal"><Link href="/community">Community</Link><Link href="/privacy">Privacy Policy</Link><Link href="/terms">Terms of Service</Link></nav><span>Made with intention <Sparkles size={12} className="footer-spark" /></span><span>Prayer is a moment to return.</span></footer>
     </main>
   );
 }

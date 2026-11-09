@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, ExternalLink, Heart, House, LayoutDashboard, Moon, RefreshCw } from "lucide-react";
+import { BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, ExternalLink, Heart, House, LayoutDashboard, Moon, RefreshCw } from "lucide-react";
+import Link from "next/link";
 import { DashboardTabs, type DashboardTab } from "./components/DashboardTabs";
 import { DailyOverview } from "./components/DailyOverview";
 import { InsightsTab } from "./components/InsightsTab";
@@ -221,7 +222,7 @@ export default function Home() {
       <aside className="sidebar">
         <a className="brand" href="/"><span className="brand-mark"><Moon size={20} fill="currentColor" /></span><span>Salah<span className="brand-dot">.</span></span></a>
         <div className="nav-label">MENU</div>
-        <nav><a className="nav-item" href="/"><House size={18} />Home</a><button className={`nav-item ${activeTab === "today" ? "active" : ""}`} onClick={() => openTab("today")}><LayoutDashboard size={18} />Dashboard</button><button className={`nav-item ${activeTab === "times" ? "active" : ""}`} onClick={() => openTab("times")}><CalendarDays size={18} />Prayer times</button><button className={`nav-item ${activeTab === "qaza" ? "active" : ""}`} onClick={() => openTab("qaza")}><Clock3 size={18} />Qaza tracker</button><button className={`nav-item ${activeTab === "insights" ? "active" : ""}`} onClick={() => openTab("insights")}><Heart size={18} />Insights</button></nav>
+        <nav><a className="nav-item" href="/"><House size={18} />Home</a><button className={`nav-item ${activeTab === "today" ? "active" : ""}`} onClick={() => openTab("today")}><LayoutDashboard size={18} />Dashboard</button><button className={`nav-item ${activeTab === "times" ? "active" : ""}`} onClick={() => openTab("times")}><CalendarDays size={18} />Prayer times</button><button className={`nav-item ${activeTab === "qaza" ? "active" : ""}`} onClick={() => openTab("qaza")}><Clock3 size={18} />Qaza tracker</button><button className={`nav-item ${activeTab === "insights" ? "active" : ""}`} onClick={() => openTab("insights")}><Heart size={18} />Insights</button><Link className="nav-item" href="/community"><BookOpen size={18} />Community</Link></nav>
         <div className="sidebar-bottom"><div className="quote-card"><span className="quote-spark">?</span><p>“Indeed, prayer has been decreed upon the believers a decree of specified times.”</p><span className="quote-ref">QURAN 4:103</span></div><button className="profile profile-button" onClick={() => setShowProfileEditor(true)} aria-label="Edit profile"><div className="avatar">{profile.image ? <img src={profile.image} alt="" /> : profile.name.trim().slice(0, 1).toUpperCase() || "U"}</div><div><b>{profile.name}</b><span>{driveEmail || "Your personal space"}</span></div><ChevronDown size={16} className="profile-chevron" /></button></div>
       </aside>
 

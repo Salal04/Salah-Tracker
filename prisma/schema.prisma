@@ -44,6 +44,52 @@ model AdminAuditLog {
   @@map("admin_audit_logs")
 }
 
+model ContentSettings {
+  id            String   @id
+  quoteMode     String   @default("rotating") @db.VarChar(20)
+  fixedQuoteId  String?
+  updatedAt     DateTime @updatedAt
+
+  @@map("content_settings")
+}
+
+model DailyQuote {
+  id          String   @id @default(cuid())
+  text        String   @db.VarChar(600)
+  attribution String?  @db.VarChar(160)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([active, createdAt])
+  @@map("daily_quotes")
+}
+
+model SharedResource {
+  id          String   @id @default(cuid())
+  title       String   @db.VarChar(140)
+  description String?  @db.VarChar(600)
+  url         String   @db.VarChar(2048)
+  published   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([published, createdAt])
+  @@map("shared_resources")
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String   @db.VarChar(160)
+  body      String   @db.VarChar(3000)
+  published Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([published, updatedAt])
+  @@map("announcements")
+}
+
 model FeatureRequest {
   id        String   @id @default(cuid())
   userId    String
