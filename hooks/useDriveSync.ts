@@ -225,7 +225,10 @@ export function useDriveSync(args: Args) {
     void fetch("/api/auth/google/access-token", { cache: "no-store" }).then(async (response) => {
       if (!response.ok) {
         const result = await response.json().catch(() => null) as { error?: string } | null;
-        if (active) { setDriveStatus(result?.error || "Sign in with Google Drive to continue."); setDriveAuthChecked(true); }
+        if (active) {
+          setDriveStatus(result?.error || "Sign in with Google Drive to continue."); setDriveAuthChecked(true);
+          if (result?.error?.toLowerCase().includes("suspended")) window.location.replace("/sign-in?error=suspended");
+        }
         return;
       }
       const restored = await response.json() as {
@@ -291,6 +294,23 @@ export function useDriveSync(args: Args) {
     const check = () => setDriveRefreshUsedToday(localStore.getItem(localKeys.driveManualRefresh(driveEmail, dateKey(new Date()))) === "1");
     check(); const interval = window.setInterval(check, 60_000); return () => window.clearInterval(interval);
   }, [ready, driveEmail]);
+  useEffect(() => {
+    if (!ready || !driveToken) return;
+    let active = true;
+    const checkAccount = async () => {
+      try {
+        const response = await fetch("/api/auth/google/status", { cache: "no-store" });
+        const result = await response.json() as { suspended?: boolean };
+        if (active && result.suspended) {
+          setDriveStatus("This account is suspended. Contact an administrator for help.");
+          setDriveToken(""); setDriveFileId(""); setDriveEmail(""); setDriveHydrated(false);
+          window.location.replace("/sign-in?error=suspended");
+        }
+      } catch { /* Keep the current session if the brief account check is unavailable. */ }
+    };
+    const interval = window.setInterval(() => void checkAccount(), 30_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [ready, driveToken]);
   const queueDriveChange = (slot: SyncSlot = { kind: "nafl" }) => {
     const pending = (Number(localStore.getItem(localKeys.drivePendingChanges)) || 0) + 1;
     localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);

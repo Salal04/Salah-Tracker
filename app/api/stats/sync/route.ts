@@ -27,6 +27,8 @@ export async function POST(request: NextRequest) {
 
   const userId = getGoogleSessionUserId(request);
   if (!userId) return NextResponse.json({ error: "Daily Drive authorization is not enabled." }, { status: 401 });
+  const account = await prisma.user.findUnique({ where: { id: userId }, select: { suspendedAt: true } });
+  if (account?.suspendedAt) return NextResponse.json({ error: "This account is suspended." }, { status: 403 });
 
   let localDay: unknown;
   try {

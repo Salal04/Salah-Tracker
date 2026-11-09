@@ -12,7 +12,8 @@ export function isDefaultAdmin(email: string) {
 export async function getSessionAccount(request: NextRequest) {
   const userId = getGoogleSessionUserId(request);
   if (!userId) return null;
-  return prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, name: true } });
+  const account = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, name: true, suspendedAt: true } });
+  return account && !account.suspendedAt ? account : null;
 }
 
 export async function getAdminAccount(request: NextRequest) {

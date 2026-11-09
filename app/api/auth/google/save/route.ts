@@ -46,8 +46,9 @@ export async function POST(request: Request) {
 
     const existingUser = await prisma.user.findUnique({
       where: { googleSubject: account.sub },
-      select: { id: true },
+      select: { id: true, suspendedAt: true },
     });
+    if (existingUser?.suspendedAt) return NextResponse.json({ error: "This account is suspended. Contact an administrator for help." }, { status: 403 });
     const user = await prisma.user.upsert({
       where: { googleSubject: account.sub },
       create: {

@@ -51,8 +51,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "A verified Google account is required." }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({ where: { googleSubject: account.sub }, select: { id: true } });
+    const user = await prisma.user.findUnique({ where: { googleSubject: account.sub }, select: { id: true, suspendedAt: true } });
     if (!user) return NextResponse.json({ error: "Sign in before saving stats." }, { status: 401 });
+    if (user.suspendedAt) return NextResponse.json({ error: "This account is suspended." }, { status: 403 });
 
     await prisma.userStats.upsert({
       where: { userId: user.id },

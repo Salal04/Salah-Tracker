@@ -65,8 +65,9 @@ export async function GET(request: NextRequest) {
         name: (account.name || account.email.split("@")[0]).slice(0, 100),
         profilePictureUrl,
       },
-      select: { id: true },
+      select: { id: true, suspendedAt: true },
     });
+    if (user.suspendedAt) return failed(request, "this Salah Tracker account is suspended; contact an administrator");
 
     const prior = await prisma.googleDriveCredential.findUnique({ where: { userId: user.id }, select: { refreshTokenEncrypted: true } });
     const refreshTokenEncrypted = tokens.refresh_token

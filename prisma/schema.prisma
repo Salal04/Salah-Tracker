@@ -14,6 +14,7 @@ model User {
   name              String
   profilePictureUrl String?
   subscriptionExpiresAt DateTime?
+  suspendedAt       DateTime?
   stats             UserStats?
   driveCredential   GoogleDriveCredential?
   featureRequests   FeatureRequest[]
@@ -28,6 +29,19 @@ model AdminEmail {
   createdAt DateTime @default(now())
 
   @@map("admin_emails")
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  adminEmail  String   @db.VarChar(254)
+  action      String   @db.VarChar(60)
+  targetEmail String   @db.VarChar(254)
+  details     String?  @db.VarChar(1000)
+  createdAt   DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@index([targetEmail, createdAt])
+  @@map("admin_audit_logs")
 }
 
 model FeatureRequest {

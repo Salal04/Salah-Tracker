@@ -14,9 +14,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const [user, credential] = await Promise.all([
-      prisma.user.findUnique({ where: { id: userId }, select: { email: true, name: true, profilePictureUrl: true } }),
+      prisma.user.findUnique({ where: { id: userId }, select: { email: true, name: true, profilePictureUrl: true, suspendedAt: true } }),
       prisma.googleDriveCredential.findUnique({ where: { userId } }),
     ]);
+    if (user?.suspendedAt) return NextResponse.json({ error: "This account is suspended. Contact an administrator for help." }, { status: 403 });
     if (!user || !credential) return NextResponse.json({ error: "Google Drive authorization is missing." }, { status: 401 });
 
     const clientId = process.env.GOOGLE_CLIENT_ID || process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
