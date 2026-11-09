@@ -13,6 +13,7 @@ import { SetupWizard } from "@/components/qaza/SetupWizard";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { SignIn } from "./components/SignIn";
 import { AffirmationDialog } from "./components/AffirmationDialog";
+import { FeatureRequestForm } from "./components/FeatureRequestForm";
 import type { Log, PrayerLocation, UserProfile } from "@/lib/types";
 import { addDays, dateKey } from "@/lib/dates";
 import { fard, nawafil, otherNawafil, sunnahMuakkadahByFard } from "@/lib/prayers";
@@ -243,6 +244,7 @@ export default function Home() {
           {activeTab === "times" && <PrayerTimesTab timingStatus={timingStatus} todayTimings={todayTimings} monthTimings={monthTimings} cityDraft={cityDraft} countryDraft={countryDraft} methodDraft={methodDraft} onCityChange={setCityDraft} onCountryChange={setCountryDraft} onMethodChange={setMethodDraft} onSaveLocation={savePrayerLocation} formatTime={formatPrayerTime} />}
           {activeTab === "qaza" && <><ReviewQueue records={qaza.pendingConfirmations} onAnswer={qaza.answerReview} /><QazaTracker repository={qaza.repository} refreshKey={qaza.refreshKey + syncQueuePulse} onComplete={qaza.complete} onLoadYear={loadQazaYear} /></>}
           {activeTab === "insights" && <InsightsTab analysis={displayedAnalysis} analysisSource={analysisSource} fard={fard} nawafil={nawafil} streaks={prayerStreaks} />}
+          <FeatureRequestForm />
           <footer>Made with intention <span>&bull;</span> Your progress stays on this device.</footer>
         </div>
       </section>
