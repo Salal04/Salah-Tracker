@@ -81,7 +81,6 @@ export function useDriveSync(args: Args) {
   const [drivePendingChanges, setDrivePendingChanges] = useState(0);
   const [driveSyncPulse, setDriveSyncPulse] = useState(0);
   const [syncNow, setSyncNow] = useState(false);
-  const [syncPrayerId, setSyncPrayerId] = useState("");
 
   const readDayLog = (date: string): Log => {
     const value: unknown = readJson<unknown>(localKeys.log(date), {});
@@ -291,7 +290,7 @@ export function useDriveSync(args: Args) {
   };
 
   useEffect(() => {
-    if (!driveToken || !driveFileId || !driveHydrated || !ready || !startDate || drivePendingChanges === 0) return;
+    if (!driveToken || !driveFileId || !driveHydrated || !ready || !startDate || (drivePendingChanges === 0 && !syncNow)) return;
     const today = dateKey(new Date());
     setDriveStatus("Changes saved here; Drive backup is queued.");
     const pendingAtStart = drivePendingChanges;
@@ -316,7 +315,7 @@ export function useDriveSync(args: Args) {
         return !start || !end || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || now < start || now >= end;
       });
       if (expiredFard) {
-        setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false); setSyncPrayerId("");
+        setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false);
         return;
       }
       const pendingSlots = readJson<SyncSlot[]>(localKeys.drivePendingSyncSlots, []);
@@ -329,7 +328,7 @@ export function useDriveSync(args: Args) {
       if (pendingSlots.some((slot) => slot.kind === "nafl") || quotaSlots.length === 0) quotaSlots.push({ kind: "nafl" });
       const quotaResult = await reserveDriveQuota(driveEmail, quotaSlots, now);
       if (!quotaResult.allowed) {
-        setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false); setSyncPrayerId("");
+        setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false);
         if (quotaResult.reason !== "prayer-window-closed" && quotaResult.reason !== "invalid-prayer") {
           const tomorrow = new Date(); tomorrow.setHours(24, 0, 3, 0);
           window.setTimeout(() => setDriveSyncPulse((pulse) => pulse + 1), Math.max(1000, tomorrow.getTime() - Date.now()));
@@ -371,7 +370,7 @@ export function useDriveSync(args: Args) {
       })().catch(() => { setSyncNow(false); setDriveStatus("Saved on this device. Drive sync will retry after your next change or connection."); });
     }, syncNow ? 0 : DRIVE_SYNC_QUOTA.debounceMs);
     return () => window.clearTimeout(timeout);
-  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow, syncPrayerId]);
+  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow]);
 
   // OAuth connection and restore are kept in one hook so no token reaches browser storage.
   const connectGoogleDrive = (prompt = "select_account", forceRefresh = false) => {
@@ -526,7 +525,7 @@ export function useDriveSync(args: Args) {
   }, [driveToken, driveFileId]);
   const requestPrayerSync = (prayerId: string, prayerName: string) => {
     if (!driveToken || !driveFileId || !marks[prayerId] || marks[prayerId].changedAt === readSynced(dateKey(day))[prayerId]) return;
-    setSyncPrayerId(prayerId); setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
+    setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
   };
   return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync };
 }
