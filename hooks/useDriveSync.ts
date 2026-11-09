@@ -1,0 +1,402 @@
+import { useEffect, useState } from "react";
+import type { CustomNafl, DayMarks, GoogleDriveFile, Log, ReadableTrackerDayBackup, TrackerAnalysis, TrackerBackup, TrackerDayBackup, TrackerSummary, UserProfile } from "@/lib/types";
+import { addDays, dateKey, DATE_STRING_REGEX } from "@/lib/dates";
+import { localKeys, localStore, logDateFromKey, marksDateFromKey, customNawafilDateFromKey, isSyncedMarksKey, readCustomNawafil, readJson, writeCustomNawafil, writeJson } from "@/lib/storage/local";
+import { calculateTrackerAnalysis, mergeTrackerData } from "@/lib/analysis";
+import { downloadDriveJson, findDriveFileByName, listDriveFiles, renameDriveFile, uploadDriveJson } from "@/lib/drive/client";
+import { migrateTrackerDayBackup } from "@/lib/day-backup";
+import { normalizeUserProfile } from "@/lib/profile";
+
+declare global {
+  interface Window {
+    google?: { accounts: { oauth2: { initTokenClient: (config: { client_id: string; scope: string; callback: (response: { access_token?: string; expires_in?: number; error?: string }) => void }) => { requestAccessToken: (options?: { prompt?: string }) => void } } } };
+  }
+}
+
+const SUMMARY = "Salah Tracker Summary.json";
+const LEGACY = "Salah Tracker data.json";
+const ARCHIVE = "Salah Tracker Legacy backup.json";
+const dayFileName = (date: string) => `Salah Tracker ${date}.json`;
+const isAnalysis = (value: unknown): value is TrackerAnalysis => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<TrackerAnalysis>;
+  return candidate.version === 2 && Number.isFinite(candidate.totalPrayers) && Number.isFinite(candidate.totalFard) && Number.isFinite(candidate.onTimeFard) && !!candidate.daily && typeof candidate.daily === "object";
+};
+const readAnalysis = (email: string): TrackerAnalysis | null => {
+  const value: unknown = readJson<unknown>(localKeys.driveAnalysis(email), null);
+  return isAnalysis(value) ? value : null;
+};
+const saveAggregateStats = async (token: string, analysis: TrackerAnalysis) => {
+  const response = await fetch("/api/stats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      accessToken: token,
+      stats: {
+        totalFard: analysis.totalFard,
+        onTimeFard: analysis.onTimeFard,
+        daysWithFard: analysis.daysWithFard,
+        completeFardDays: analysis.completeFardDays,
+        bestStreakDays: analysis.bestStreakDays,
+      },
+    }),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error("Could not save aggregate stats to Neon.");
+};
+const readProfile = () => normalizeUserProfile(readJson<unknown>(localKeys.userProfile, null));
+
+type Args = {
+  ready: boolean; day: Date; startDate: string; setStartDate: (value: string) => void;
+  prayerLocation: { city: string; country: string; method: number };
+  log: Log; marks: DayMarks; customNawafil: CustomNafl[]; qazaDone: string[]; qazaDoneOn: Record<string, string>;
+  setProfile: (profile: UserProfile) => void;
+  setLog: (log: Log) => void; setMarks: (marks: DayMarks) => void; setCustomNawafil: (items: CustomNafl[]) => void; setSyncedMarks: (marks: Record<string, string>) => void;
+  setQazaDone: (done: string[]) => void; setQazaDoneOn: (doneOn: Record<string, string>) => void;
+};
+
+export function useDriveSync(args: Args) {
+  const { ready, day, startDate, setStartDate, prayerLocation, log, marks, customNawafil, qazaDone, qazaDoneOn, setProfile, setLog, setMarks, setCustomNawafil, setSyncedMarks, setQazaDone, setQazaDoneOn } = args;
+  const [gisReady, setGisReady] = useState(false);
+  const [driveToken, setDriveToken] = useState("");
+  const [driveFileId, setDriveFileId] = useState("");
+  const [driveDayFileIds, setDriveDayFileIds] = useState<Record<string, string>>({});
+  const [driveEmail, setDriveEmail] = useState("");
+  const [driveStatus, setDriveStatus] = useState("");
+  const [driveHydrated, setDriveHydrated] = useState(false);
+  const [driveAuthChecked, setDriveAuthChecked] = useState(false);
+  const [driveAnalysis, setDriveAnalysis] = useState<TrackerAnalysis | null>(null);
+  const [driveFetchedDay, setDriveFetchedDay] = useState("");
+  const [driveRefreshUsedToday, setDriveRefreshUsedToday] = useState(false);
+  const [drivePendingChanges, setDrivePendingChanges] = useState(0);
+  const [driveSyncPulse, setDriveSyncPulse] = useState(0);
+  const [syncNow, setSyncNow] = useState(false);
+
+  const readDayLog = (date: string): Log => {
+    const value: unknown = readJson<unknown>(localKeys.log(date), {});
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Log : {};
+  };
+  const readDayMarks = (date: string): DayMarks => {
+    const value: unknown = readJson<unknown>(localKeys.marks(date), {});
+    return value && typeof value === "object" && !Array.isArray(value) ? value as DayMarks : {};
+  };
+  const readSynced = (date: string) => {
+    const value: unknown = readJson<unknown>(localKeys.syncedMarks(date), {});
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, string> : {};
+  };
+  const clearSynced = () => {
+    for (let index = localStore.length - 1; index >= 0; index--) if (isSyncedMarksKey(localStore.key(index))) localStore.removeItem(localStore.key(index)!);
+  };
+  const collect = (minimumDate: string, viewedDay?: string, viewedLog?: Log, completedQaza?: string[], completedOn?: Record<string, string>, viewedMarks?: DayMarks, viewedCustomNawafil?: CustomNafl[]): TrackerBackup => {
+    const logs: Record<string, Log> = {};
+    const allMarks: Record<string, DayMarks> = {};
+    const allCustomNawafil: Record<string, CustomNafl[]> = {};
+    for (let index = 0; index < localStore.length; index++) {
+      const key = localStore.key(index);
+      const logDate = logDateFromKey(key);
+      if (logDate && logDate >= minimumDate) {
+        const value: unknown = readJson<unknown>(key!, {});
+        if (value && typeof value === "object" && !Array.isArray(value)) logs[logDate] = value as Log;
+      }
+      const marksDate = marksDateFromKey(key);
+      if (marksDate && marksDate >= minimumDate) {
+        const value: unknown = readJson<unknown>(key!, {});
+        if (value && typeof value === "object" && !Array.isArray(value)) allMarks[marksDate] = value as DayMarks;
+      }
+      const customDate = customNawafilDateFromKey(key);
+      if (customDate && customDate >= minimumDate) allCustomNawafil[customDate] = readCustomNawafil(customDate);
+    }
+    if (viewedDay && viewedLog && viewedDay >= minimumDate && viewedDay <= dateKey(new Date())) logs[viewedDay] = viewedLog;
+    if (viewedDay && viewedMarks && viewedDay >= minimumDate && viewedDay <= dateKey(new Date())) allMarks[viewedDay] = viewedMarks;
+    if (viewedDay && viewedCustomNawafil && viewedDay >= minimumDate && viewedDay <= dateKey(new Date())) allCustomNawafil[viewedDay] = viewedCustomNawafil;
+    const storedProfile = readProfile();
+    const backup: TrackerBackup = { startDate: minimumDate, logs, marks: allMarks, customNawafil: allCustomNawafil, qazaDone: completedQaza || readJson<string[]>(localKeys.qazaDone, []), qazaDoneOn: completedOn || readJson<Record<string, string>>(localKeys.qazaDoneOn, {}), profile: storedProfile ? { ...storedProfile, location: { city: prayerLocation.city, country: prayerLocation.country } } : undefined };
+    backup.analysis = calculateTrackerAnalysis(backup, dateKey(new Date()));
+    return backup;
+  };
+  const restore = (backup: TrackerBackup, minimumDate: string) => {
+    for (let index = localStore.length - 1; index >= 0; index--) {
+      const key = localStore.key(index);
+      if (logDateFromKey(key) || marksDateFromKey(key) || customNawafilDateFromKey(key)) localStore.removeItem(key!);
+    }
+    for (const [date, value] of Object.entries(backup.logs || {})) if (date >= minimumDate) writeJson(localKeys.log(date), value);
+    for (const [date, value] of Object.entries(backup.marks || {})) if (date >= minimumDate) writeJson(localKeys.marks(date), value);
+    for (const [date, value] of Object.entries(backup.customNawafil || {})) if (date >= minimumDate) writeCustomNawafil(date, value);
+    const done = Array.isArray(backup.qazaDone) ? backup.qazaDone : [];
+    const doneOn = backup.qazaDoneOn && typeof backup.qazaDoneOn === "object" ? backup.qazaDoneOn : {};
+    writeJson(localKeys.qazaDone, done); writeJson(localKeys.qazaDoneOn, doneOn);
+    localStore.setItem(localKeys.startDate, minimumDate);
+    if (backup.profile && typeof backup.profile.name === "string") {
+      const image = typeof backup.profile.image === "string" && backup.profile.image.length < 600_000 && (backup.profile.image.startsWith("data:image/") || backup.profile.image.startsWith("https://")) ? backup.profile.image : "";
+      const restoredProfile = normalizeUserProfile({ ...backup.profile, name: backup.profile.name.slice(0, 40), image, location: { city: prayerLocation.city, country: prayerLocation.country } });
+      if (restoredProfile) writeJson(localKeys.userProfile, restoredProfile);
+    }
+    setQazaDone(done); setQazaDoneOn(doneOn);
+  };
+  const recordSynced = (backup: TrackerBackup) => {
+    for (const [date, dayMarks] of Object.entries(backup.marks || {})) {
+      const synced = readSynced(date);
+      for (const [id, mark] of Object.entries(dayMarks)) if (mark?.changedAt) synced[id] = mark.changedAt;
+      writeJson(localKeys.syncedMarks(date), synced);
+    }
+  };
+  const summary = (backup: TrackerBackup, dailyFileIds: Record<string, string>): TrackerSummary => ({ version: 1, startDate: backup.startDate, qazaDone: backup.qazaDone, qazaDoneOn: backup.qazaDoneOn || {}, profile: backup.profile, analysis: backup.analysis || calculateTrackerAnalysis(backup, dateKey(new Date())), dailyFileIds });
+  const ensureDailyFiles = async (token: string, known: Record<string, string>, backup: TrackerBackup) => {
+    const dates = [...new Set([...Object.keys(backup.logs || {}), ...Object.keys(backup.marks || {}), ...Object.keys(backup.customNawafil || {})])].filter((date) => DATE_STRING_REGEX.test(date)).sort();
+    const next = { ...known };
+    for (let index = 0; index < dates.length; index += 8) await Promise.all(dates.slice(index, index + 8).map(async (date) => {
+      if (next[date]) return;
+      next[date] = await uploadDriveJson(token, null, dayFileName(date), { version: 3, date, log: backup.logs[date] || {}, marks: backup.marks?.[date] || {}, customNawafil: backup.customNawafil?.[date] || [] });
+      localStore.setItem(localKeys.driveDayCached(date), "1");
+    }));
+    return next;
+  };
+
+  useEffect(() => {
+    if (!ready) return;
+    setDrivePendingChanges(Number(localStore.getItem(localKeys.drivePendingChanges)) || 0);
+    const ids: unknown = readJson<unknown>(localKeys.driveDayFileIds, {});
+    setDriveDayFileIds(ids && typeof ids === "object" && !Array.isArray(ids) ? ids as Record<string, string> : {});
+    const email = localStore.getItem(localKeys.driveEmail) || "";
+    setDriveEmail(email);
+    setDriveRefreshUsedToday(!!email && localStore.getItem(localKeys.driveManualRefresh(email, dateKey(new Date()))) === "1");
+    setDriveAnalysis(email ? readAnalysis(email) : null);
+    setDriveFetchedDay(localStore.getItem(localKeys.driveFetchedDay) || "");
+  }, [ready]);
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    void fetch("/api/auth/google/access-token", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null;
+        if (active) { setDriveStatus(result?.error || "Sign in with Google Drive to continue."); setDriveAuthChecked(true); }
+        return;
+      }
+      const restored = await response.json() as {
+        accessToken?: string;
+        summaryFileId?: string | null;
+        account?: { email?: string; name?: string; profilePictureUrl?: string | null };
+      };
+      if (!active) return;
+      setDriveAuthChecked(true);
+      if (!restored.accessToken || !restored.account?.email) return;
+      const email = restored.account.email;
+      const summaryId = restored.summaryFileId || localStore.getItem(localKeys.driveFileId) || "";
+      setDriveToken(restored.accessToken);
+      setDriveEmail(email);
+      setDriveAnalysis(readAnalysis(email));
+      if (summaryId) {
+        setDriveFileId(summaryId);
+        localStore.setItem(localKeys.driveFileId, summaryId);
+        setDriveHydrated(true);
+      }
+      localStore.setItem(localKeys.driveEmail, email);
+      if (localStore.getItem(localKeys.userProfileCustom) !== "1") {
+        const profile = {
+          name: (restored.account.name || email.split("@")[0] || "Your name").slice(0, 40),
+          image: restored.account.profilePictureUrl || "",
+          location: { city: prayerLocation.city, country: prayerLocation.country },
+        };
+        writeJson(localKeys.userProfile, profile);
+        setProfile(profile);
+      }
+      setDriveStatus("Google Drive session restored.");
+    }).catch(() => {
+      if (active) { console.warn("[auth] Could not restore the saved Google session."); setDriveAuthChecked(true); }
+    });
+    return () => { active = false; };
+  }, [ready, prayerLocation.city, prayerLocation.country, setProfile]);
+  useEffect(() => {
+    if (!ready) return;
+    void fetch("/api/stats/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ localDay: dateKey(new Date()) }),
+      cache: "no-store",
+    }).then(async (response) => {
+      if (response.status === 401) return;
+      if (!response.ok) {
+        console.warn("[stats] Automatic daily Drive sync did not complete.");
+        return;
+      }
+      const result = await response.json() as { synced?: boolean };
+      if (result.synced) console.info("[stats] Automatic daily Drive stats sync completed.");
+    }).catch(() => console.warn("[stats] Automatic daily Drive sync is unavailable."));
+  }, [ready]);
+  useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client"; script.async = true;
+    script.onload = () => setGisReady(true);
+    script.onerror = () => setDriveStatus("Could not load Google sign-in. Check your connection.");
+    document.head.appendChild(script); return () => script.remove();
+  }, []);
+  useEffect(() => {
+    if (!ready || !driveEmail) return;
+    const check = () => setDriveRefreshUsedToday(localStore.getItem(localKeys.driveManualRefresh(driveEmail, dateKey(new Date()))) === "1");
+    check(); const interval = window.setInterval(check, 60_000); return () => window.clearInterval(interval);
+  }, [ready, driveEmail]);
+  const queueDriveChange = () => {
+    const pending = (Number(localStore.getItem(localKeys.drivePendingChanges)) || 0) + 1;
+    localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);
+  };
+
+  useEffect(() => {
+    if (!driveToken || !driveFileId || !driveHydrated || !ready || !startDate || drivePendingChanges === 0) return;
+    const today = dateKey(new Date());
+    const writesKey = localKeys.driveWrites(driveEmail, today);
+    const writesToday = Number(localStore.getItem(writesKey)) || 0;
+    if (writesToday >= 4) {
+      setDriveStatus("Saved on this device. Drive sync will resume tomorrow.");
+      const tomorrow = new Date(); tomorrow.setHours(24, 0, 3, 0);
+      const timeout = window.setTimeout(() => setDriveSyncPulse((pulse) => pulse + 1), Math.max(1000, tomorrow.getTime() - Date.now()));
+      return () => window.clearTimeout(timeout);
+    }
+    setDriveStatus("Changes saved here; Drive backup is queued.");
+    const pendingAtStart = drivePendingChanges;
+    const timeout = window.setTimeout(() => {
+      setDriveStatus("Saving the daily file and summary to Google Drive…");
+      localStore.setItem(writesKey, String(writesToday + 1));
+      const backup = collect(startDate, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil);
+      const date = dateKey(day);
+      void (async () => {
+        const dayId = await uploadDriveJson(driveToken, driveDayFileIds[date] || null, dayFileName(date), { version: 3, date, log: backup.logs[date] || {}, marks: backup.marks?.[date] || {}, customNawafil: backup.customNawafil?.[date] || [] });
+        localStore.setItem(localKeys.driveDayCached(date), "1");
+        const nextIds = { ...driveDayFileIds, [date]: dayId };
+        const summaryId = await uploadDriveJson(driveToken, driveFileId, SUMMARY, summary(backup, nextIds));
+        if (summaryId !== driveFileId) { localStore.setItem(localKeys.driveFileId, summaryId); setDriveFileId(summaryId); }
+        writeJson(localKeys.driveDayFileIds, nextIds); setDriveDayFileIds(nextIds);
+        const analysis = backup.analysis!;
+        writeJson(localKeys.driveAnalysis(driveEmail), analysis); localStore.setItem(localKeys.driveAnalysisVersion, "3"); localStore.setItem(localKeys.driveFetchedDay, today);
+        setDriveAnalysis(analysis); setDriveFetchedDay(today);
+        void saveAggregateStats(driveToken, analysis).catch(() => setDriveStatus("Drive updated, but aggregate stats could not be saved to Neon."));
+        recordSynced(backup); setSyncedMarks(readSynced(dateKey(day))); setSyncNow(false);
+        const pending = Math.max(0, (Number(localStore.getItem(localKeys.drivePendingChanges)) || 0) - pendingAtStart);
+        localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);
+        setDriveStatus(`Drive updated: ${dayFileName(date)} and ${SUMMARY}.`);
+      })().catch(() => { setSyncNow(false); setDriveStatus("Saved on this device. Drive sync will retry after your next change or connection."); });
+    }, syncNow ? 0 : 45_000);
+    return () => window.clearTimeout(timeout);
+  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow]);
+
+  // OAuth connection and restore are kept in one hook so no token reaches browser storage.
+  const connectGoogleDrive = (prompt = "select_account", forceRefresh = false) => {
+    console.info("[auth] Google Drive sign-in started.");
+    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    if (!clientId) { setDriveStatus("Add NEXT_PUBLIC_GOOGLE_CLIENT_ID to .env.local to enable Google Drive."); return; }
+    if (!gisReady || !window.google) { setDriveStatus("Google sign-in is still loading. Try again in a moment."); return; }
+    setDriveStatus("Connecting and checking your Google Drive data…");
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({ client_id: clientId, scope: "openid email profile https://www.googleapis.com/auth/drive.file", callback: async (response) => {
+      if (!response.access_token) { console.info("[auth] Google Drive sign-in was cancelled or denied."); setDriveStatus(response.error || "Google sign-in was cancelled."); return; }
+      try {
+        const token = response.access_token;
+        const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers: { Authorization: `Bearer ${token}` } });
+        if (!profileResponse.ok) throw new Error("Could not read your Google account.");
+        const googleAccount = await profileResponse.json() as { email?: string; name?: string; picture?: string };
+        const saveResponse = await fetch("/api/auth/google/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accessToken: token }),
+          cache: "no-store",
+        });
+        if (!saveResponse.ok) {
+          const result = await saveResponse.json().catch(() => null) as { error?: string } | null;
+          throw new Error(result?.error || "Could not save your Google account. Please try again.");
+        }
+        const email = googleAccount.email || "Google account"; const today = dateKey(new Date());
+        setDriveRefreshUsedToday(localStore.getItem(localKeys.driveManualRefresh(email, today)) === "1");
+        const cachedId = localStore.getItem(localKeys.driveFileId) || "";
+        const cached: unknown = readJson<unknown>(localKeys.driveDayFileIds, {});
+        let ids = cached && typeof cached === "object" && !Array.isArray(cached) ? cached as Record<string, string> : {};
+        const sameAccount = localStore.getItem(localKeys.driveEmail) === email;
+        if (!sameAccount) ids = {};
+        if (localStore.getItem(localKeys.userProfileCustom) !== "1" && (!sameAccount || !localStore.getItem(localKeys.userProfile))) {
+          const googleProfile = { name: (googleAccount.name || email.split("@")[0] || "Your name").slice(0, 40), image: googleAccount.picture || "", location: { city: prayerLocation.city, country: prayerLocation.country } };
+          writeJson(localKeys.userProfile, googleProfile); setProfile(googleProfile);
+        }
+        if (!sameAccount) { clearSynced(); setSyncedMarks({}); }
+        const fresh = !forceRefresh && sameAccount && cachedId && localStore.getItem(localKeys.driveFetchedDay) === today && localStore.getItem(localKeys.driveAnalysisVersion) === "3";
+        if (fresh) {
+          const analysis = readAnalysis(email) || calculateTrackerAnalysis(collect(startDate, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil), today);
+          setDriveFileId(cachedId); setDriveToken(token); setDriveEmail(email); setDriveAnalysis(analysis); setDriveFetchedDay(today); setDriveHydrated(true); setDriveStatus("Using today’s local copy. Drive is checked once per day.");
+          void saveAggregateStats(token, analysis).catch(() => setDriveStatus("Drive is connected, but aggregate stats could not be saved to Neon."));
+          return;
+        }
+        if (localStore.getItem(localKeys.driveAttemptDay(email)) === today) { setDriveStatus("Drive was already checked today. Your saved local history is still available."); return; }
+        localStore.setItem(localKeys.driveAttemptDay(email), today);
+        let file: GoogleDriveFile | undefined;
+        if (sameAccount && cachedId && localStore.getItem(localKeys.driveAnalysisVersion) === "3") file = { id: cachedId, name: SUMMARY };
+        else {
+          file = await findDriveFileByName(token, SUMMARY);
+          if (!file) {
+            file = await findDriveFileByName(token, LEGACY);
+            if (file) for (const item of await listDriveFiles(token, "name contains 'Salah Tracker' and trashed=false", 1000, "Could not index your existing daily files in Drive.")) {
+              const match = item.name.match(/^Salah Tracker (\d{4}-\d{2}-\d{2})\.json$/); if (match) ids[match[1]] = item.id;
+            }
+          }
+        }
+        let id: string;
+        if (file) {
+          const { data } = await downloadDriveJson<TrackerSummary | TrackerBackup>(token, file.id, "Could not download your tracker from Drive.");
+          let downloaded: TrackerBackup;
+          if (file.name === SUMMARY) {
+            const sum = data as TrackerSummary; ids = sum.dailyFileIds && typeof sum.dailyFileIds === "object" ? sum.dailyFileIds : ids;
+              const logs: Record<string, Log> = {}; const allMarks: Record<string, DayMarks> = {}; const allCustomNawafil: Record<string, CustomNafl[]> = {};
+            await Promise.all(Object.entries(ids).map(async ([date, dayId]) => {
+              if (!forceRefresh && localStore.getItem(localKeys.driveDayCached(date)) === "1") { logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); return; }
+              const { data: raw, status } = await downloadDriveJson<ReadableTrackerDayBackup>(token, dayId, `Could not download the ${date} tracker file from Drive.`, [404]);
+              if (status === 404) { delete ids[date]; logs[date] = readDayLog(date); allMarks[date] = readDayMarks(date); allCustomNawafil[date] = readCustomNawafil(date); return; }
+              const record = migrateTrackerDayBackup(raw as ReadableTrackerDayBackup);
+              if (record.date === date) { logs[date] = record.log || {}; allMarks[date] = record.marks || {}; allCustomNawafil[date] = record.customNawafil || []; writeJson(localKeys.log(date), logs[date]); writeJson(localKeys.marks(date), allMarks[date]); writeCustomNawafil(date, allCustomNawafil[date]); localStore.setItem(localKeys.driveDayCached(date), "1"); }
+            }));
+            downloaded = { startDate: sum.startDate, logs, marks: allMarks, customNawafil: allCustomNawafil, qazaDone: sum.qazaDone || [], qazaDoneOn: sum.qazaDoneOn || {}, profile: sum.profile, analysis: sum.analysis };
+          } else downloaded = data as TrackerBackup;
+          const validStart = DATE_STRING_REGEX.test(downloaded.startDate) ? downloaded.startDate : (localStore.getItem(localKeys.startDate) || today);
+          const remote: TrackerBackup = { startDate: validStart, logs: downloaded.logs || {}, marks: downloaded.marks || {}, customNawafil: downloaded.customNawafil || {}, qazaDone: Array.isArray(downloaded.qazaDone) ? downloaded.qazaDone : [], qazaDoneOn: downloaded.qazaDoneOn || {} };
+          setDriveFetchedDay(today);
+          const local = collect(localStore.getItem(localKeys.startDate) || validStart, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil);
+          const localPending = sameAccount ? Number(localStore.getItem(localKeys.drivePendingChanges)) || 0 : 0;
+          const needsAnalysis = file.name === SUMMARY || downloaded.analysis?.version !== 2 || !downloaded.qazaDoneOn || !downloaded.marks;
+          const needsProfileLocation = !downloaded.profile?.location || downloaded.profile.location.city !== prayerLocation.city || downloaded.profile.location.country !== prayerLocation.country;
+          const pending = Math.max(localPending, needsAnalysis || !downloaded.profile || needsProfileLocation || !sameAccount ? 1 : 0);
+          const backup = !sameAccount || localPending > 0 ? mergeTrackerData(remote, local) : remote;
+          const analysis = calculateTrackerAnalysis(backup, today); writeJson(localKeys.driveAnalysis(email), analysis); setDriveAnalysis(analysis);
+          void saveAggregateStats(token, analysis).catch(() => setDriveStatus("Drive data is available, but aggregate stats could not be saved to Neon."));
+          ids = await ensureDailyFiles(token, ids, backup);
+          if (file.name === LEGACY) { id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids)); await renameDriveFile(token, file.id, ARCHIVE); } else id = file.id;
+          const minimumDate = backup.startDate; restore(backup, minimumDate);
+          setProfile(readProfile() || { name: "", image: "" }); recordSynced(remote);
+          setStartDate(minimumDate); setLog(readDayLog(dateKey(day))); setMarks(readDayMarks(dateKey(day))); setCustomNawafil(readCustomNawafil(dateKey(day))); setSyncedMarks(readSynced(dateKey(day)));
+          localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);
+          localStore.setItem(localKeys.driveAnalysisVersion, "3");
+        } else {
+          const minimumDate = localStore.getItem(localKeys.startDate) || today;
+          const backup = collect(minimumDate, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil);
+          ids = await ensureDailyFiles(token, ids, backup); id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids));
+          recordSynced(backup); setSyncedMarks(readSynced(dateKey(day)));
+          if (backup.analysis) {
+            writeJson(localKeys.driveAnalysis(email), backup.analysis); setDriveAnalysis(backup.analysis); setDriveFetchedDay(today);
+            void saveAggregateStats(token, backup.analysis).catch(() => setDriveStatus("Drive data is available, but aggregate stats could not be saved to Neon."));
+          }
+          setStartDate(minimumDate); localStore.setItem(localKeys.driveWrites(email, today), "1"); localStore.setItem(localKeys.drivePendingChanges, "0"); setDrivePendingChanges(0); localStore.setItem(localKeys.driveAnalysisVersion, "3");
+        }
+        localStore.setItem(localKeys.driveFileId, id); writeJson(localKeys.driveDayFileIds, ids); setDriveDayFileIds(ids);
+        localStore.setItem(localKeys.driveEmail, email); localStore.setItem(localKeys.driveFetchedDay, today);
+        setDriveFileId(id); setDriveToken(token); setDriveEmail(email); setDriveHydrated(true); setDriveStatus("Drive checked today. Prayer history is cached here; updates sync in batches.");
+      } catch (error) { setDriveStatus(error instanceof Error ? error.message : "Could not connect to Google Drive."); }
+    } });
+    tokenClient.requestAccessToken({ prompt });
+  };
+  const refreshDriveData = () => {
+    if (driveEmail) {
+      const today = dateKey(new Date()); const key = localKeys.driveManualRefresh(driveEmail, today);
+      if (localStore.getItem(key) === "1") { setDriveRefreshUsedToday(true); setDriveStatus("Manual Drive refresh is limited to once per day."); return; }
+      localStore.setItem(key, "1"); setDriveRefreshUsedToday(true); localStore.removeItem(localKeys.driveFetchedDay); localStore.removeItem(localKeys.driveAttemptDay(driveEmail));
+    }
+    connectGoogleDrive("", true);
+  };
+  const requestPrayerSync = (prayerId: string, prayerName: string) => {
+    if (!driveToken || !driveFileId || !marks[prayerId] || marks[prayerId].changedAt === readSynced(dateKey(day))[prayerId]) return;
+    setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
+  };
+  return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, requestPrayerSync };
+}

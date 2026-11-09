@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                String     @id @default(cuid())
+  googleSubject     String     @unique
+  email             String     @unique
+  name              String
+  profilePictureUrl String?
+  stats             UserStats?
+  driveCredential   GoogleDriveCredential?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@map("users")
+}
+
+model UserStats {
+  userId          String   @id
+  totalFard       Int      @default(0)
+  onTimeFard      Int      @default(0)
+  daysWithFard    Int      @default(0)
+  completeFardDays Int     @default(0)
+  bestStreakDays  Int      @default(0)
+  rankingOptIn    Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_stats")
+}
+
+model GoogleDriveCredential {
+  userId                     String   @id
+  refreshTokenEncrypted      String
+  summaryFileId              String?
+  lastDriveStatsSyncDay      String?
+  updatedAt                  DateTime @updatedAt
+  user                       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("google_drive_credentials")
+}
