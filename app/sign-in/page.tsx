@@ -14,9 +14,10 @@ export default async function SignInPage({ searchParams }: Props) {
       <section className="sign-in-content">
         <span className="landing-eyebrow"><ShieldCheck size={14} /> PRIVATE, PERSONAL TRACKING</span>
         <h1>Sign in to continue.</h1>
-        <p>Google Drive sign-in is required to use your dashboard. Your prayer record stays backed up in Drive; only aggregate stats are saved in Neon. Approve access once, and your session will be restored when you return.</p>
+        <p>Google Drive sign-in is required to use your dashboard. Your prayer record stays backed up in Drive. Neon stores account details, an encrypted Drive credential, and aggregate stats—not daily prayer entries or Qaza. Approve access once, and your session will be restored when you return.</p>
         {error === "not-configured" && <p className="sign-in-error" role="alert">Google sign-in needs setup. Check the server OAuth credentials and try again.</p>}
         <Link className="landing-primary" href="/api/auth/google/start">Continue with Google Drive <ArrowRight size={16} /></Link>
+        <nav className="sign-in-legal" aria-label="Legal"><Link href="/privacy">Privacy Policy</Link><Link href="/terms">Terms of Service</Link></nav>
       </section>
     </main>
   );

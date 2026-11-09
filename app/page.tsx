@@ -22,7 +22,7 @@ export default function HomePage() {
           <p className="landing-lede">Salah is a calm, personal prayer journal to help you keep track of fard salah, build steady habits, and gently work through Qaza.</p>
           <div className="landing-actions"><Link className="landing-primary" href="/dashboard">Go to your dashboard <ArrowRight size={17} /></Link><a className="landing-secondary" href="#features">Discover the features <ArrowDownRight size={16} /></a></div>
           <div className="landing-trust"><ShieldCheck size={15} /><span>Your prayer log stays yours. Save it on this device or back it up to your Google Drive.</span></div>
-          <div className="landing-data-warning"><AlertTriangle size={17} /><p><b>Google Drive sign-in is required</b><br />Connect your Google account to use Salah and keep your prayer record backed up in Drive. Only aggregate stats are saved in Neon.</p></div>
+          <div className="landing-data-warning"><AlertTriangle size={17} /><p><b>Google Drive sign-in is required</b><br />Connect your Google account to use Salah and keep your prayer record backed up in Drive. Neon stores account details, an encrypted Drive credential, and aggregate stats; daily records and Qaza stay in Drive.</p></div>
         </div>
         <div className="landing-art" aria-hidden="true"><div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" /><div className="art-moon" /><span className="art-star star-a">✦</span><span className="art-star star-b">✧</span><span className="art-star star-c">·</span><div className="art-note"><span className="art-note-icon"><Check size={14} /></span><span><b>One prayer at a time</b><small>A little consistency, a lot of barakah.</small></span></div></div>
       </section>
@@ -33,7 +33,7 @@ export default function HomePage() {
       </section>
 
       <section className="landing-bottom"><div><span className="landing-eyebrow">YOUR NEXT MOMENT STARTS HERE</span><h2>Start where you are.</h2><p>Open your dashboard and take today one prayer at a time.</p></div><Link className="landing-primary" href="/dashboard">Go to your dashboard <ArrowRight size={17} /></Link></section>
-      <footer className="landing-footer"><Link className="landing-brand footer-brand" href="/"><span className="brand-mark"><Moon size={16} fill="currentColor" /></span><span>Salah<span className="brand-dot">.</span></span></Link><span>Made with intention <span className="footer-spark">✧</span></span><span>Prayer is a moment to return.</span></footer>
+      <footer className="landing-footer"><Link className="landing-brand footer-brand" href="/"><span className="brand-mark"><Moon size={16} fill="currentColor" /></span><span>Salah<span className="brand-dot">.</span></span></Link><nav className="landing-footer-links" aria-label="Legal"><Link href="/privacy">Privacy Policy</Link><Link href="/terms">Terms of Service</Link></nav><span>Made with intention <Sparkles size={12} className="footer-spark" /></span><span>Prayer is a moment to return.</span></footer>
     </main>
   );
 }

@@ -41,7 +41,7 @@ export function SignIn({ profile, accountEmail, connected, status, onSignIn, onE
         : <button className="drive-button" onClick={onSignIn}>{accountEmail ? "Reconnect Google Drive" : "Sign In with Google"}</button>}
       {!dailySyncEnabled && <div className="drive-consent-note" role="note">
         <b>One-time setup for automatic stats</b>
-        <p>Allow Google Drive access once so Salah can check your tracker summary when you open the app. Only your aggregate stats are saved to Neon; your prayer history and Qaza stay in Drive.</p>
+        <p>Allow Google Drive access once so Salah can check your tracker summary when you open the app. Neon stores account details, an encrypted Drive credential, and aggregate stats; daily prayer entries and Qaza stay in Drive.</p>
         <button type="button" className="drive-consent-button" onClick={onEnableDailySync}>Allow once and keep me signed in</button>
       </div>}
     </section>
