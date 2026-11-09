@@ -38,6 +38,7 @@ const formatPrayerTime = (value?: string, timezone?: string) => {
   try { return new Intl.DateTimeFormat([], { ...(timezone ? { timeZone: timezone } : {}), hour: "numeric", minute: "2-digit" }).format(parsed); }
   catch { return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
 };
+const prayerTimeKeys: Record<string, string> = { fajr: "Fajr", "fajr-sunnah": "Fajr", dhuhr: "Dhuhr", "dhuhr-sunnah": "Dhuhr", asr: "Asr", "asr-sunnah": "Asr", maghrib: "Maghrib", "maghrib-sunnah": "Maghrib", isha: "Isha", "isha-sunnah": "Isha", witr: "Isha", tahajjud: "Isha" };
 const readUserProfile = (): UserProfile | null => {
   return normalizeUserProfile(readJson<unknown>(localKeys.userProfile, null));
 };
@@ -55,6 +56,7 @@ const readSavedLogs = (): Record<string, Log> => {
 export default function Home() {
   const router = useRouter();
   const [day, setDay] = useState(() => new Date());
+  const [clockNow, setClockNow] = useState(0);
   const [activeTab, setActiveTab] = useState<DashboardTab>("today");
   const [profile, setProfile] = useState<UserProfile>({ name: "", image: "" });
   const [showProfileEditor, setShowProfileEditor] = useState(false);
@@ -68,6 +70,7 @@ export default function Home() {
   const [countryDraft, setCountryDraft] = useState(defaultLocation.country);
   const [methodDraft, setMethodDraft] = useState(defaultLocation.method);
   const { todayTimings, monthTimings, timingStatus, setTimingStatus } = usePrayerTimes(ready, day, location);
+  useEffect(() => { const tick = () => setClockNow(Date.now()); const timer = window.setTimeout(tick, 0); const interval = window.setInterval(tick, 30_000); return () => { window.clearTimeout(timer); window.clearInterval(interval); }; }, []);
   const daily = useDailyRecord(ready, day, todayTimings, monthTimings);
   const { log, setLog, marks, setMarks, syncedMarks, setSyncedMarks, customNawafil, addCustomNafl, togglePrayer } = daily;
   const qaza = useQaza(ready, dateKey(new Date()), todayTimings, monthTimings);
@@ -197,6 +200,13 @@ export default function Home() {
   };
   const handlePrayerToggle = (id: string) => {
     if (!isToday) return;
+    const timeKey = prayerTimeKeys[id];
+    const prayerTime = timeKey ? todayTimings?.timings[timeKey] : undefined;
+    if (!log[id] && timeKey && (!prayerTime || Number.isNaN(Date.parse(prayerTime)) || Date.now() < Date.parse(prayerTime))) {
+      const label = prayerTime ? formatPrayerTime(prayerTime, todayTimings?.timezone) : "the prayer time is available";
+      showToast(`You can mark this prayer when ${label} starts.`);
+      return;
+    }
     if (marks[id]?.changedAt && marks[id].changedAt === syncedMarks[id]) {
       showToast("This prayer was synced and is locked for today. You can change it tomorrow.");
       return;
@@ -240,7 +250,7 @@ export default function Home() {
           <DashboardTabs active={activeTab} onChange={openTab} qazaPendingCount={qaza.pendingConfirmations.length} />
           {activeTab === "today" && <>
             <DailyOverview doneFard={doneFard} progress={progress} />
-            <PrayerListSection fard={fard} relatedByFard={sunnahMuakkadahByFard} otherNawafil={otherNawafil} customNawafil={customNawafil} log={log} marks={marks} syncedMarks={syncedMarks} isToday={isToday} driveEmail={driveEmail} syncNow={syncNow} onToggle={handlePrayerToggle} onSync={(prayer) => requestPrayerSync(prayer.id, prayer.name)} onAddCustom={(name, rakaat) => { addCustomNafl(name, rakaat); queueDriveChange(); }} />
+            <PrayerListSection fard={fard} relatedByFard={sunnahMuakkadahByFard} otherNawafil={otherNawafil} customNawafil={customNawafil} log={log} marks={marks} syncedMarks={syncedMarks} isToday={isToday} now={clockNow} timings={todayTimings?.timings || null} driveEmail={driveEmail} syncNow={syncNow} onToggle={handlePrayerToggle} onSync={(prayer) => requestPrayerSync(prayer.id, prayer.name)} onAddCustom={(name, rakaat) => { addCustomNafl(name, rakaat); queueDriveChange(); }} />
           </>}
           {activeTab === "times" && <PrayerTimesTab timingStatus={timingStatus} todayTimings={todayTimings} monthTimings={monthTimings} cityDraft={cityDraft} countryDraft={countryDraft} methodDraft={methodDraft} onCityChange={setCityDraft} onCountryChange={setCountryDraft} onMethodChange={setMethodDraft} onSaveLocation={savePrayerLocation} formatTime={formatPrayerTime} />}
           {activeTab === "qaza" && <><ReviewQueue records={qaza.pendingConfirmations} onAnswer={qaza.answerReview} /><QazaTracker repository={qaza.repository} refreshKey={qaza.refreshKey + syncQueuePulse} onComplete={qaza.complete} onLoadYear={loadQazaYear} /></>}
