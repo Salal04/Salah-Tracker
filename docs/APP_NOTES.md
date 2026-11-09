@@ -66,8 +66,9 @@ Additional improvements:
 
 data save 
  - if the user mark the prayer and click the sync it will not update so show warning to user 
- - user other nawafil can only mark sync once, store it in the local storage and mark them at the next day if no sync is left for today for nawfil 
- - so total 5+1 sync to update user can sync any prayer  until 5 sync complete once 5 sync complete it will not change the file, if the prayer time goes remove the 1 sync fixed it with the prayer timing 
+ - each fard prayer has one sync slot per local day; after a successful sync that prayer is locked for the day and cannot be toggled or changed
+ - user other nawafil can only sync once per local day; recommend marking them through the day and syncing at day end. Keep unsynced nawafil local and include the prior pending day(s) in the next day’s nawafil update
+ - so total 5+1 sync slots to update: one for each fard prayer and one shared nawafil slot. A fard slot is available only within that prayer’s recorded timing window; after that window closes, its unused slot expires
 - isha prayer time remains next day before fajar time so adjust accrdonliy
 - we have limited quota for google console application so use accrodlinly
-   
+

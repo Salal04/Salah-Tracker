@@ -6,6 +6,7 @@ import { calculateTrackerAnalysis, mergeTrackerData } from "@/lib/analysis";
 import { downloadDriveJson, findDriveFileByName, listDriveFiles, renameDriveFile, uploadDriveJson } from "@/lib/drive/client";
 import { migrateTrackerDayBackup } from "@/lib/day-backup";
 import { normalizeUserProfile } from "@/lib/profile";
+import { claimSyncQuotaSlots, DRIVE_SYNC_QUOTA, parseSyncQuotaState, quotaFailureMessage, type SyncSlot } from "@/lib/sync/quota";
 
 declare global {
   interface Window {
@@ -71,6 +72,7 @@ export function useDriveSync(args: Args) {
   const [drivePendingChanges, setDrivePendingChanges] = useState(0);
   const [driveSyncPulse, setDriveSyncPulse] = useState(0);
   const [syncNow, setSyncNow] = useState(false);
+  const [syncPrayerId, setSyncPrayerId] = useState("");
 
   const readDayLog = (date: string): Log => {
     const value: unknown = readJson<unknown>(localKeys.log(date), {});
@@ -83,6 +85,25 @@ export function useDriveSync(args: Args) {
   const readSynced = (date: string) => {
     const value: unknown = readJson<unknown>(localKeys.syncedMarks(date), {});
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, string> : {};
+  };
+  const reserveDriveQuota = async (email: string, slots: SyncSlot | SyncSlot[], now = new Date()) => {
+    const reserve = () => {
+      const writesKey = localKeys.driveWrites(email, dateKey(now));
+      const writesToday = Number(localStore.getItem(writesKey)) || 0;
+      const quotaKey = localKeys.driveQuota(email);
+      const savedQuota = localStore.getItem(quotaKey);
+      const state = savedQuota ? parseSyncQuotaState(savedQuota, now) : parseSyncQuotaState(null, now, writesToday);
+      const result = claimSyncQuotaSlots(state, Array.isArray(slots) ? slots : [slots], now);
+      if (result.allowed) {
+        localStore.setItem(quotaKey, JSON.stringify(result.state));
+        localStore.setItem(writesKey, String(writesToday + 1));
+      }
+      return result;
+    };
+    const lockManager = (navigator as Navigator & { locks?: { request<T>(name: string, callback: () => T): Promise<T> } }).locks;
+    return lockManager
+      ? lockManager.request(`salah-drive-quota:${email}:${dateKey(now)}`, reserve)
+      : reserve();
   };
   const clearSynced = () => {
     for (let index = localStore.length - 1; index >= 0; index--) if (isSyncedMarksKey(localStore.key(index))) localStore.removeItem(localStore.key(index)!);
@@ -141,11 +162,12 @@ export function useDriveSync(args: Args) {
     }
   };
   const summary = (backup: TrackerBackup, dailyFileIds: Record<string, string>): TrackerSummary => ({ version: 1, startDate: backup.startDate, qazaDone: backup.qazaDone, qazaDoneOn: backup.qazaDoneOn || {}, profile: backup.profile, analysis: backup.analysis || calculateTrackerAnalysis(backup, dateKey(new Date())), dailyFileIds });
-  const ensureDailyFiles = async (token: string, known: Record<string, string>, backup: TrackerBackup) => {
+  const ensureDailyFiles = async (token: string, known: Record<string, string>, backup: TrackerBackup, beforeWrite: () => Promise<void>) => {
     const dates = [...new Set([...Object.keys(backup.logs || {}), ...Object.keys(backup.marks || {}), ...Object.keys(backup.customNawafil || {})])].filter((date) => DATE_STRING_REGEX.test(date)).sort();
     const next = { ...known };
     for (let index = 0; index < dates.length; index += 8) await Promise.all(dates.slice(index, index + 8).map(async (date) => {
       if (next[date]) return;
+      await beforeWrite();
       next[date] = await uploadDriveJson(token, null, dayFileName(date), { version: 3, date, log: backup.logs[date] || {}, marks: backup.marks?.[date] || {}, customNawafil: backup.customNawafil?.[date] || [] });
       localStore.setItem(localKeys.driveDayCached(date), "1");
     }));
@@ -235,33 +257,77 @@ export function useDriveSync(args: Args) {
     const check = () => setDriveRefreshUsedToday(localStore.getItem(localKeys.driveManualRefresh(driveEmail, dateKey(new Date()))) === "1");
     check(); const interval = window.setInterval(check, 60_000); return () => window.clearInterval(interval);
   }, [ready, driveEmail]);
-  const queueDriveChange = () => {
+  const queueDriveChange = (slot: SyncSlot = { kind: "nafl" }) => {
     const pending = (Number(localStore.getItem(localKeys.drivePendingChanges)) || 0) + 1;
     localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);
+    const syncDays = readJson<string[]>(localKeys.drivePendingSyncDays, []);
+    const dayKey = dateKey(day);
+    if (!syncDays.includes(dayKey)) writeJson(localKeys.drivePendingSyncDays, [...syncDays, dayKey]);
+    const syncSlots = readJson<SyncSlot[]>(localKeys.drivePendingSyncSlots, []);
+    const nextSlots = slot.kind === "fard"
+      ? [...syncSlots.filter((current) => current.kind !== "fard" || current.prayerId !== slot.prayerId), slot]
+      : syncSlots.some((current) => current.kind === "nafl") ? syncSlots : [...syncSlots, slot];
+    writeJson(localKeys.drivePendingSyncSlots, nextSlots);
   };
 
   useEffect(() => {
     if (!driveToken || !driveFileId || !driveHydrated || !ready || !startDate || drivePendingChanges === 0) return;
     const today = dateKey(new Date());
-    const writesKey = localKeys.driveWrites(driveEmail, today);
-    const writesToday = Number(localStore.getItem(writesKey)) || 0;
-    if (writesToday >= 4) {
-      setDriveStatus("Saved on this device. Drive sync will resume tomorrow.");
-      const tomorrow = new Date(); tomorrow.setHours(24, 0, 3, 0);
-      const timeout = window.setTimeout(() => setDriveSyncPulse((pulse) => pulse + 1), Math.max(1000, tomorrow.getTime() - Date.now()));
-      return () => window.clearTimeout(timeout);
-    }
     setDriveStatus("Changes saved here; Drive backup is queued.");
     const pendingAtStart = drivePendingChanges;
-    const timeout = window.setTimeout(() => {
+    const timeout = window.setTimeout(async () => {
       setDriveStatus("Saving the daily file and summary to Google Drive…");
-      localStore.setItem(writesKey, String(writesToday + 1));
+      const now = new Date();
+      const dirtyFardMarks: Array<{ id: string; mark: DayMarks[string]; day: string }> = [];
+      for (let index = 0; index < localStore.length; index++) {
+        const key = localStore.key(index);
+        const marksDay = marksDateFromKey(key);
+        if (!marksDay || !key) continue;
+        const dayMarks = marksDay === dateKey(day) ? marks : readDayMarks(marksDay);
+        const synced = readSynced(marksDay);
+        for (const id of DRIVE_SYNC_QUOTA.fardPrayerIds) {
+          const mark = dayMarks[id];
+          if (mark?.changedAt && mark.changedAt !== synced[id]) dirtyFardMarks.push({ id, mark, day: marksDay });
+        }
+      }
+      const expiredFard = dirtyFardMarks.some(({ mark }) => {
+        const start = mark?.windowStart ? new Date(mark.windowStart) : undefined;
+        const end = mark?.windowEnd ? new Date(mark.windowEnd) : undefined;
+        return !start || !end || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || now < start || now >= end;
+      });
+      if (expiredFard) {
+        setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false); setSyncPrayerId("");
+        return;
+      }
+      const pendingSlots = readJson<SyncSlot[]>(localKeys.drivePendingSyncSlots, []);
+      const fardSlots = new Map<string, SyncSlot>();
+      for (const { id, mark } of dirtyFardMarks) {
+        if (!fardSlots.has(id)) fardSlots.set(id, { kind: "fard", prayerId: id, windowStart: mark.windowStart, windowEnd: mark.windowEnd });
+      }
+      for (const slot of pendingSlots) if (slot.kind === "fard" && !fardSlots.has(slot.prayerId)) fardSlots.set(slot.prayerId, slot);
+      const quotaSlots: SyncSlot[] = [...fardSlots.values()];
+      if (pendingSlots.some((slot) => slot.kind === "nafl") || quotaSlots.length === 0) quotaSlots.push({ kind: "nafl" });
+      const quotaResult = await reserveDriveQuota(driveEmail, quotaSlots, now);
+      if (!quotaResult.allowed) {
+        setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false); setSyncPrayerId("");
+        if (quotaResult.reason !== "prayer-window-closed" && quotaResult.reason !== "invalid-prayer") {
+          const tomorrow = new Date(); tomorrow.setHours(24, 0, 3, 0);
+          window.setTimeout(() => setDriveSyncPulse((pulse) => pulse + 1), Math.max(1000, tomorrow.getTime() - Date.now()));
+        }
+        return;
+      }
       const backup = collect(startDate, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil);
       const date = dateKey(day);
+      const queuedDays = readJson<string[]>(localKeys.drivePendingSyncDays, []);
+      const datesToSync = [...new Set([...queuedDays, ...dirtyFardMarks.map(({ day: markDay }) => markDay)].filter((entry) => DATE_STRING_REGEX.test(entry)))];
+      if (datesToSync.length === 0) datesToSync.push(date);
       void (async () => {
-        const dayId = await uploadDriveJson(driveToken, driveDayFileIds[date] || null, dayFileName(date), { version: 3, date, log: backup.logs[date] || {}, marks: backup.marks?.[date] || {}, customNawafil: backup.customNawafil?.[date] || [] });
-        localStore.setItem(localKeys.driveDayCached(date), "1");
-        const nextIds = { ...driveDayFileIds, [date]: dayId };
+        const nextIds = { ...driveDayFileIds };
+        for (const syncDate of datesToSync) {
+          const dayId = await uploadDriveJson(driveToken, nextIds[syncDate] || null, dayFileName(syncDate), { version: 3, date: syncDate, log: backup.logs[syncDate] || {}, marks: backup.marks?.[syncDate] || {}, customNawafil: backup.customNawafil?.[syncDate] || [] });
+          nextIds[syncDate] = dayId;
+          localStore.setItem(localKeys.driveDayCached(syncDate), "1");
+        }
         const summaryId = await uploadDriveJson(driveToken, driveFileId, SUMMARY, summary(backup, nextIds));
         if (summaryId !== driveFileId) { localStore.setItem(localKeys.driveFileId, summaryId); setDriveFileId(summaryId); }
         writeJson(localKeys.driveDayFileIds, nextIds); setDriveDayFileIds(nextIds);
@@ -272,11 +338,21 @@ export function useDriveSync(args: Args) {
         recordSynced(backup); setSyncedMarks(readSynced(dateKey(day))); setSyncNow(false);
         const pending = Math.max(0, (Number(localStore.getItem(localKeys.drivePendingChanges)) || 0) - pendingAtStart);
         localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);
+        const currentPendingDays = readJson<string[]>(localKeys.drivePendingSyncDays, []);
+        let remainingDays = currentPendingDays.filter((entry) => !datesToSync.includes(entry));
+        if (pending > 0 && remainingDays.length === 0) remainingDays = [dateKey(day)];
+        writeJson(localKeys.drivePendingSyncDays, remainingDays);
+        const usedFardIds = new Set(fardSlots.keys());
+        const currentPendingSlots = readJson<SyncSlot[]>(localKeys.drivePendingSyncSlots, []);
+        const remainingSlots = currentPendingSlots.filter((entry) => entry.kind === "nafl"
+          ? !quotaSlots.some((used) => used.kind === "nafl")
+          : !usedFardIds.has(entry.prayerId));
+        writeJson(localKeys.drivePendingSyncSlots, remainingSlots);
         setDriveStatus(`Drive updated: ${dayFileName(date)} and ${SUMMARY}.`);
       })().catch(() => { setSyncNow(false); setDriveStatus("Saved on this device. Drive sync will retry after your next change or connection."); });
-    }, syncNow ? 0 : 45_000);
+    }, syncNow ? 0 : DRIVE_SYNC_QUOTA.debounceMs);
     return () => window.clearTimeout(timeout);
-  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow]);
+  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow, syncPrayerId]);
 
   // OAuth connection and restore are kept in one hook so no token reaches browser storage.
   const connectGoogleDrive = (prompt = "select_account", forceRefresh = false) => {
@@ -308,6 +384,16 @@ export function useDriveSync(args: Args) {
         const cached: unknown = readJson<unknown>(localKeys.driveDayFileIds, {});
         let ids = cached && typeof cached === "object" && !Array.isArray(cached) ? cached as Record<string, string> : {};
         const sameAccount = localStore.getItem(localKeys.driveEmail) === email;
+        let bootstrapQuotaReservation: Promise<void> | null = null;
+        const reserveBootstrapQuota = () => {
+          if (!bootstrapQuotaReservation) {
+            bootstrapQuotaReservation = (async () => {
+              const result = await reserveDriveQuota(email, { kind: "nafl" });
+              if (!result.allowed) throw new Error(quotaFailureMessage(result.reason));
+            })();
+          }
+          return bootstrapQuotaReservation;
+        };
         if (!sameAccount) ids = {};
         if (localStore.getItem(localKeys.userProfileCustom) !== "1" && (!sameAccount || !localStore.getItem(localKeys.userProfile))) {
           const googleProfile = { name: (googleAccount.name || email.split("@")[0] || "Your name").slice(0, 40), image: googleAccount.picture || "", location: { city: prayerLocation.city, country: prayerLocation.country } };
@@ -361,8 +447,8 @@ export function useDriveSync(args: Args) {
           const backup = !sameAccount || localPending > 0 ? mergeTrackerData(remote, local) : remote;
           const analysis = calculateTrackerAnalysis(backup, today); writeJson(localKeys.driveAnalysis(email), analysis); setDriveAnalysis(analysis);
           void saveAggregateStats(token, analysis).catch(() => setDriveStatus("Drive data is available, but aggregate stats could not be saved to Neon."));
-          ids = await ensureDailyFiles(token, ids, backup);
-          if (file.name === LEGACY) { id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids)); await renameDriveFile(token, file.id, ARCHIVE); } else id = file.id;
+          ids = await ensureDailyFiles(token, ids, backup, reserveBootstrapQuota);
+          if (file.name === LEGACY) { await reserveBootstrapQuota(); id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids)); await renameDriveFile(token, file.id, ARCHIVE); } else id = file.id;
           const minimumDate = backup.startDate; restore(backup, minimumDate);
           setProfile(readProfile() || { name: "", image: "" }); recordSynced(remote);
           setStartDate(minimumDate); setLog(readDayLog(dateKey(day))); setMarks(readDayMarks(dateKey(day))); setCustomNawafil(readCustomNawafil(dateKey(day))); setSyncedMarks(readSynced(dateKey(day)));
@@ -371,13 +457,13 @@ export function useDriveSync(args: Args) {
         } else {
           const minimumDate = localStore.getItem(localKeys.startDate) || today;
           const backup = collect(minimumDate, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil);
-          ids = await ensureDailyFiles(token, ids, backup); id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids));
+          ids = await ensureDailyFiles(token, ids, backup, reserveBootstrapQuota); await reserveBootstrapQuota(); id = await uploadDriveJson(token, null, SUMMARY, summary(backup, ids));
           recordSynced(backup); setSyncedMarks(readSynced(dateKey(day)));
           if (backup.analysis) {
             writeJson(localKeys.driveAnalysis(email), backup.analysis); setDriveAnalysis(backup.analysis); setDriveFetchedDay(today);
             void saveAggregateStats(token, backup.analysis).catch(() => setDriveStatus("Drive data is available, but aggregate stats could not be saved to Neon."));
           }
-          setStartDate(minimumDate); localStore.setItem(localKeys.driveWrites(email, today), "1"); localStore.setItem(localKeys.drivePendingChanges, "0"); setDrivePendingChanges(0); localStore.setItem(localKeys.driveAnalysisVersion, "3");
+          setStartDate(minimumDate); localStore.setItem(localKeys.drivePendingChanges, "0"); setDrivePendingChanges(0); localStore.setItem(localKeys.driveAnalysisVersion, "3");
         }
         localStore.setItem(localKeys.driveFileId, id); writeJson(localKeys.driveDayFileIds, ids); setDriveDayFileIds(ids);
         localStore.setItem(localKeys.driveEmail, email); localStore.setItem(localKeys.driveFetchedDay, today);
@@ -396,7 +482,7 @@ export function useDriveSync(args: Args) {
   };
   const requestPrayerSync = (prayerId: string, prayerName: string) => {
     if (!driveToken || !driveFileId || !marks[prayerId] || marks[prayerId].changedAt === readSynced(dateKey(day))[prayerId]) return;
-    setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
+    setSyncPrayerId(prayerId); setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
   };
   return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, requestPrayerSync };
 }

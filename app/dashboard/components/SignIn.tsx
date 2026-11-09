@@ -35,6 +35,7 @@ export function SignIn({ profile, accountEmail, connected, status, onSignIn, onE
       <div className="drive-copy">
         <b>{connected ? `Signed in as ${profile.name}` : "Sign-In with Google Drive"}</b>
         <span>{accountEmail || status || "Sign in to connect your Google Drive and back up your tracker."}</span>
+        {accountEmail && status && <span role="status">{status}</span>}
       </div>
       {connected && children
         ? children

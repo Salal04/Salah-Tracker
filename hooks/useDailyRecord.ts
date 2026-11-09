@@ -4,6 +4,7 @@ import { addDays, dateKey } from "@/lib/dates";
 import { localKeys, readCustomNawafil, readJson, writeCustomNawafil, writeJson } from "@/lib/storage/local";
 import { getPrayerWindow, prayerIsOnTime } from "@/lib/timings";
 import { reducePrayerMark, type Affirmation } from "@/lib/marks";
+import { DRIVE_SYNC_QUOTA, type SyncSlot } from "@/lib/sync/quota";
 
 const objectValue = <T extends object>(value: unknown): T =>
   value && typeof value === "object" && !Array.isArray(value) ? value as T : {} as T;
@@ -35,7 +36,7 @@ export function useDailyRecord(ready: boolean, day: Date, todayTimings: DayTimin
     setCustomNawafil((current) => [...current, { id, name: cleanName, ...(rakaat ? { rakaat } : {}) }]);
   };
 
-  const togglePrayer = (id: string, affirmation: Affirmation, queueDriveChange: () => void, onToast: (message: string) => void) => {
+  const togglePrayer = (id: string, affirmation: Affirmation, queueDriveChange: (slot?: SyncSlot) => void, onToast: (message: string) => void) => {
     if (dayKey !== dateKey(new Date())) return;
     const wasDone = !!log[id];
     const now = new Date();
@@ -47,7 +48,11 @@ export function useDailyRecord(ready: boolean, day: Date, todayTimings: DayTimin
     const next = reducePrayerMark(log, marks, id, { changedAt, markedAt: wasDone ? undefined : changedAt, windowStart: wasDone ? undefined : window?.start.toISOString() ?? null, windowEnd: wasDone ? undefined : window?.end.toISOString() ?? null, onTime: wasDone ? undefined : window ? prayerIsOnTime(id, now, todayTimings, nextDayFajr) === true : false, prayerTime: wasDone ? undefined : timingKey ? todayTimings?.timings[timingKey] : undefined, timezone: wasDone ? undefined : todayTimings?.timezone, timingLocation: wasDone ? undefined : todayTimings?.location }, affirmation);
     setLog(next.log);
     setMarks(next.marks);
-    queueDriveChange();
+    const updatedMark = next.marks[id];
+    const syncSlot: SyncSlot = DRIVE_SYNC_QUOTA.fardPrayerIds.includes(id as typeof DRIVE_SYNC_QUOTA.fardPrayerIds[number])
+      ? { kind: "fard", prayerId: id, windowStart: updatedMark.windowStart, windowEnd: updatedMark.windowEnd }
+      : { kind: "nafl" };
+    queueDriveChange(syncSlot);
     onToast(wasDone ? "Prayer unmarked" : "Alhamdulillah — logged");
   };
 

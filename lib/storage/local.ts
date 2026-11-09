@@ -43,7 +43,10 @@ export const localKeys = {
   driveAttemptDay: (email: string) => `salah-drive-attempt-${encodeURIComponent(email)}`,
   driveManualRefresh: (email: string, day: string) => `salah-drive-manual-refresh-${encodeURIComponent(email)}-${day}`,
   drivePendingChanges: "salah-drive-pending-changes",
+  drivePendingSyncDays: "salah-drive-pending-sync-days",
+  drivePendingSyncSlots: "salah-drive-pending-sync-slots",
   driveWrites: (email: string, day: string) => `salah-drive-writes-${encodeURIComponent(email)}-${day}`,
+  driveQuota: (email: string) => `salah-drive-quota-${encodeURIComponent(email)}`,
   prayerLocation: "salah-prayer-location",
 } as const;
 

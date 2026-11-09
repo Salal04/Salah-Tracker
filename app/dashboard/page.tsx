@@ -158,6 +158,10 @@ export default function Home() {
   };
   const handlePrayerToggle = (id: string) => {
     if (!isToday) return;
+    if (marks[id]?.changedAt && marks[id].changedAt === syncedMarks[id]) {
+      showToast("This prayer was synced and is locked for today. You can change it tomorrow.");
+      return;
+    }
     if (!log[id] && fard.some((prayer) => prayer.id === id)) {
       setAffirmationPrayer(id);
       return;

@@ -20,7 +20,13 @@ export function reducePrayerMark(
       ...marks,
       [id]: completed
         ? { ...mark, completed: true, affirmation }
-        : { changedAt: mark.changedAt, completed: false, affirmation: "none" },
+        : {
+            changedAt: mark.changedAt,
+            completed: false,
+            affirmation: "none",
+            ...(marks[id]?.windowStart !== undefined ? { windowStart: marks[id].windowStart } : {}),
+            ...(marks[id]?.windowEnd !== undefined ? { windowEnd: marks[id].windowEnd } : {}),
+          },
     },
   };
 }
