@@ -81,6 +81,7 @@ export function useDriveSync(args: Args) {
   const [drivePendingChanges, setDrivePendingChanges] = useState(0);
   const [driveSyncPulse, setDriveSyncPulse] = useState(0);
   const [syncNow, setSyncNow] = useState(false);
+  const [syncPrayerId, setSyncPrayerId] = useState("");
 
   const readDayLog = (date: string): Log => {
     const value: unknown = readJson<unknown>(localKeys.log(date), {});
@@ -112,6 +113,20 @@ export function useDriveSync(args: Args) {
     return lockManager
       ? lockManager.request(`salah-drive-quota:${email}:${dateKey(now)}`, reserve)
       : reserve();
+  };
+  const releaseDriveQuota = async (email: string, slots: SyncSlot[], now: Date) => {
+    const release = () => {
+      const quotaKey = localKeys.driveQuota(email);
+      const state = parseSyncQuotaState(localStore.getItem(quotaKey), now);
+      const fardToRelease = new Set(slots.filter((slot): slot is Extract<SyncSlot, { kind: "fard" }> => slot.kind === "fard").map((slot) => slot.prayerId));
+      const naflToRelease = slots.filter((slot) => slot.kind === "nafl").length;
+      writeJson(quotaKey, { ...state, fardUsed: state.fardUsed.filter((id) => !fardToRelease.has(id)), naflUsed: Math.max(0, state.naflUsed - naflToRelease) });
+      const writesKey = localKeys.driveWrites(email, dateKey(now));
+      localStore.setItem(writesKey, String(Math.max(0, (Number(localStore.getItem(writesKey)) || 0) - 1)));
+    };
+    const lockManager = (navigator as Navigator & { locks?: { request<T>(name: string, callback: () => T): Promise<T> } }).locks;
+    if (lockManager) await lockManager.request(`salah-drive-quota:${email}:${dateKey(now)}`, release);
+    else release();
   };
   const clearSynced = () => {
     for (let index = localStore.length - 1; index >= 0; index--) if (isSyncedMarksKey(localStore.key(index))) localStore.removeItem(localStore.key(index)!);
@@ -309,26 +324,32 @@ export function useDriveSync(args: Args) {
           if (mark?.changedAt && mark.changedAt !== synced[id]) dirtyFardMarks.push({ id, mark, day: marksDay });
         }
       }
-      const expiredFard = dirtyFardMarks.some(({ mark }) => {
+      const windowOpen = (mark: DayMarks[string] | undefined) => {
         const start = mark?.windowStart ? new Date(mark.windowStart) : undefined;
         const end = mark?.windowEnd ? new Date(mark.windowEnd) : undefined;
-        return !start || !end || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || now < start || now >= end;
-      });
-      if (expiredFard) {
-        setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false);
+        return !!start && !!end && Number.isFinite(start.getTime()) && Number.isFinite(end.getTime()) && now >= start && now < end;
+      };
+      const selectedMark = dirtyFardMarks.find(({ id, day: markDay }) => id === syncPrayerId && markDay === dateKey(day));
+      if (selectedMark && !windowOpen(selectedMark.mark)) {
+        setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false); setSyncPrayerId("");
         return;
       }
       const pendingSlots = readJson<SyncSlot[]>(localKeys.drivePendingSyncSlots, []);
       const fardSlots = new Map<string, SyncSlot>();
-      for (const { id, mark } of dirtyFardMarks) {
+      for (const { id, mark } of dirtyFardMarks.filter(({ mark }) => windowOpen(mark))) {
         if (!fardSlots.has(id)) fardSlots.set(id, { kind: "fard", prayerId: id, windowStart: mark.windowStart, windowEnd: mark.windowEnd });
       }
-      for (const slot of pendingSlots) if (slot.kind === "fard" && !fardSlots.has(slot.prayerId)) fardSlots.set(slot.prayerId, slot);
+      for (const slot of pendingSlots) if (slot.kind === "fard" && windowOpen({ changedAt: "", completed: false, affirmation: "none", windowStart: slot.windowStart, windowEnd: slot.windowEnd }) && !fardSlots.has(slot.prayerId)) fardSlots.set(slot.prayerId, slot);
       const quotaSlots: SyncSlot[] = [...fardSlots.values()];
-      if (pendingSlots.some((slot) => slot.kind === "nafl") || quotaSlots.length === 0) quotaSlots.push({ kind: "nafl" });
+      const hasPendingNafl = pendingSlots.some((slot) => slot.kind === "nafl");
+      if (!quotaSlots.length && dirtyFardMarks.length && !hasPendingNafl) {
+        setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false); setSyncPrayerId("");
+        return;
+      }
+      if (hasPendingNafl || quotaSlots.length === 0) quotaSlots.push({ kind: "nafl" });
       const quotaResult = await reserveDriveQuota(driveEmail, quotaSlots, now);
       if (!quotaResult.allowed) {
-        setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false);
+        setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false); setSyncPrayerId("");
         if (quotaResult.reason !== "prayer-window-closed" && quotaResult.reason !== "invalid-prayer") {
           const tomorrow = new Date(); tomorrow.setHours(24, 0, 3, 0);
           window.setTimeout(() => setDriveSyncPulse((pulse) => pulse + 1), Math.max(1000, tomorrow.getTime() - Date.now()));
@@ -341,10 +362,12 @@ export function useDriveSync(args: Args) {
       const datesToSync = [...new Set([...queuedDays, ...dirtyFardMarks.map(({ day: markDay }) => markDay)].filter((entry) => DATE_STRING_REGEX.test(entry)))];
       if (datesToSync.length === 0) datesToSync.push(date);
       void (async () => {
-        const nextIds = { ...driveDayFileIds };
+        const savedIds: unknown = readJson<unknown>(localKeys.driveDayFileIds, {});
+        const nextIds = { ...(savedIds && typeof savedIds === "object" && !Array.isArray(savedIds) ? savedIds as Record<string, string> : {}), ...driveDayFileIds };
         for (const syncDate of datesToSync) {
           const dayId = await saveDayFile(driveToken, nextIds[syncDate] || null, syncDate, { version: 3, date: syncDate, log: backup.logs[syncDate] || {}, marks: backup.marks?.[syncDate] || {}, customNawafil: backup.customNawafil?.[syncDate] || [] });
           nextIds[syncDate] = dayId;
+          writeJson(localKeys.driveDayFileIds, nextIds);
           localStore.setItem(localKeys.driveDayCached(syncDate), new Date().toISOString());
         }
         await saveSummaryFile(driveToken, driveFileId, summary(backup, nextIds));
@@ -353,7 +376,7 @@ export function useDriveSync(args: Args) {
         writeJson(localKeys.driveAnalysis(driveEmail), analysis); localStore.setItem(localKeys.driveAnalysisVersion, "3"); localStore.setItem(localKeys.driveFetchedDay, today);
         setDriveAnalysis(analysis); setDriveFetchedDay(today);
         void saveAggregateStats(driveToken, analysis).catch(() => setDriveStatus("Drive updated, but aggregate stats could not be saved to Neon."));
-        recordSynced(backup); setSyncedMarks(readSynced(dateKey(day))); setSyncNow(false);
+        recordSynced(backup); setSyncedMarks(readSynced(dateKey(day))); setSyncNow(false); setSyncPrayerId("");
         const pending = Math.max(0, (Number(localStore.getItem(localKeys.drivePendingChanges)) || 0) - pendingAtStart);
         localStore.setItem(localKeys.drivePendingChanges, String(pending)); setDrivePendingChanges(pending);
         const currentPendingDays = readJson<string[]>(localKeys.drivePendingSyncDays, []);
@@ -367,10 +390,14 @@ export function useDriveSync(args: Args) {
           : !usedFardIds.has(entry.prayerId));
         writeJson(localKeys.drivePendingSyncSlots, remainingSlots);
         setDriveStatus(`Drive updated: ${dayFileName(date)} and ${SUMMARY}.`);
-      })().catch(() => { setSyncNow(false); setDriveStatus("Saved on this device. Drive sync will retry after your next change or connection."); });
+      })().catch(async (error: unknown) => {
+        await releaseDriveQuota(driveEmail, quotaSlots, now);
+        setSyncNow(false); setSyncPrayerId("");
+        setDriveStatus(error instanceof Error ? `Drive sync failed: ${error.message} Your changes remain saved on this device; retry Sync.` : "Drive sync failed. Your changes remain saved on this device; retry Sync.");
+      });
     }, syncNow ? 0 : DRIVE_SYNC_QUOTA.debounceMs);
     return () => window.clearTimeout(timeout);
-  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow]);
+  }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow, syncPrayerId]);
 
   // OAuth connection and restore are kept in one hook so no token reaches browser storage.
   const connectGoogleDrive = (prompt = "select_account", forceRefresh = false) => {
@@ -525,7 +552,7 @@ export function useDriveSync(args: Args) {
   }, [driveToken, driveFileId]);
   const requestPrayerSync = (prayerId: string, prayerName: string) => {
     if (!driveToken || !driveFileId || !marks[prayerId] || marks[prayerId].changedAt === readSynced(dateKey(day))[prayerId]) return;
-    setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
+    setSyncPrayerId(prayerId); setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
   };
   return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync };
 }
