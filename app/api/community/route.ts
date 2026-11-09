@@ -15,7 +15,7 @@ export async function GET() {
     const fixed = quotes.find((quote) => quote.id === settings?.fixedQuoteId);
     const dayNumber = Math.floor(Date.now() / 86_400_000);
     const quote = fixed || (quotes.length ? quotes[dayNumber % quotes.length] : null);
-    return NextResponse.json({ quote, quoteMode: mode, quoteDate: new Date().toISOString().slice(0, 10), resources, announcements }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ quote, quotes, quoteMode: mode, quoteDate: new Date().toISOString().slice(0, 10), resources, announcements }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return NextResponse.json({ error: "Community content is unavailable. Please try again." }, { status: 503 });
   }
