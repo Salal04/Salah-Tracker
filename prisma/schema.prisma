@@ -36,6 +36,9 @@ model FeatureRequest {
   email     String
   subject   String   @db.VarChar(120)
   details   String   @db.VarChar(3000)
+  adminReply String?  @db.VarChar(3000)
+  repliedBy String?  @db.VarChar(254)
+  repliedAt DateTime?
   status    String   @default("open") @db.VarChar(20)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

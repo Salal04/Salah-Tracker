@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAdminAccount } from "@/lib/auth/admin";
+import { getAdminAccount, isDefaultAdmin } from "@/lib/auth/admin";
 import { prisma } from "@/lib/db/prisma";
 
 export const runtime = "nodejs";
@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
     if (!admin) return NextResponse.json({ error: "Admin access required." }, { status: request.cookies.has("salah_google_session") ? 403 : 401 });
     const [users, requests, admins] = await Promise.all([
       prisma.user.findMany({ orderBy: { createdAt: "desc" }, select: { id: true, email: true, name: true, createdAt: true, subscriptionExpiresAt: true } }),
-      prisma.featureRequest.findMany({ orderBy: { createdAt: "desc" }, take: 200, select: { id: true, email: true, subject: true, details: true, status: true, createdAt: true } }),
+      prisma.featureRequest.findMany({ orderBy: { createdAt: "desc" }, take: 200, select: { id: true, email: true, subject: true, details: true, status: true, adminReply: true, repliedBy: true, repliedAt: true, createdAt: true } }),
       prisma.adminEmail.findMany({ orderBy: { createdAt: "desc" }, select: { email: true, createdAt: true } }),
     ]);
     const now = Date.now();
@@ -59,11 +59,45 @@ export async function PATCH(request: NextRequest) {
   const admin = await getAdminAccount(request);
   if (!admin) return NextResponse.json({ error: "Admin access required." }, { status: 403 });
   try {
-    const body = await request.json() as { requestId?: unknown; status?: unknown };
-    if (typeof body.requestId !== "string" || !["open", "reviewed", "planned", "closed"].includes(String(body.status))) return NextResponse.json({ error: "Invalid request update." }, { status: 400 });
-    await prisma.featureRequest.update({ where: { id: body.requestId }, data: { status: String(body.status) } });
+    const body = await request.json() as { requestId?: unknown; status?: unknown; reply?: unknown };
+    if (typeof body.requestId !== "string") return NextResponse.json({ error: "Invalid request update." }, { status: 400 });
+    const data: { status?: string; adminReply?: string; repliedBy?: string; repliedAt?: Date } = {};
+    if (body.status !== undefined) {
+      if (!["open", "reviewed", "planned", "closed"].includes(String(body.status))) return NextResponse.json({ error: "Invalid request status." }, { status: 400 });
+      data.status = String(body.status);
+    }
+    if (body.reply !== undefined) {
+      const reply = typeof body.reply === "string" ? body.reply.trim() : "";
+      if (!reply || reply.length > 3000) return NextResponse.json({ error: "A reply of 1 to 3000 characters is required." }, { status: 400 });
+      data.adminReply = reply;
+      data.repliedBy = admin.email;
+      data.repliedAt = new Date();
+    }
+    if (!Object.keys(data).length) return NextResponse.json({ error: "No changes provided." }, { status: 400 });
+    await prisma.featureRequest.update({ where: { id: body.requestId }, data });
     return NextResponse.json({ saved: true });
   } catch {
     return NextResponse.json({ error: "Could not update this request." }, { status: 503 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const admin = await getAdminAccount(request);
+  if (!admin) return NextResponse.json({ error: "Admin access required." }, { status: 403 });
+  try {
+    const body = await request.json() as { userId?: unknown };
+    if (typeof body.userId !== "string") return NextResponse.json({ error: "Choose a valid account." }, { status: 400 });
+    const target = await prisma.user.findUnique({ where: { id: body.userId }, select: { id: true, email: true } });
+    if (!target) return NextResponse.json({ error: "Account not found." }, { status: 404 });
+    if (target.id === admin.id) return NextResponse.json({ error: "You cannot delete your own signed-in account." }, { status: 400 });
+    if (isDefaultAdmin(target.email)) return NextResponse.json({ error: "The default admin account cannot be deleted." }, { status: 400 });
+
+    await prisma.$transaction([
+      prisma.user.delete({ where: { id: target.id } }),
+      prisma.adminEmail.deleteMany({ where: { email: target.email.toLowerCase() } }),
+    ]);
+    return NextResponse.json({ deleted: true });
+  } catch {
+    return NextResponse.json({ error: "Could not delete this account." }, { status: 503 });
   }
 }

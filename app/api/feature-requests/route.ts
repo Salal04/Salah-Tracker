@@ -4,6 +4,22 @@ import { prisma } from "@/lib/db/prisma";
 
 export const runtime = "nodejs";
 
+export async function GET(request: NextRequest) {
+  const account = await getSessionAccount(request);
+  if (!account) return NextResponse.json({ error: "Sign in with Google to view your requests." }, { status: 401 });
+  try {
+    const requests = await prisma.featureRequest.findMany({
+      where: { userId: account.id },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: { id: true, subject: true, details: true, status: true, adminReply: true, repliedBy: true, repliedAt: true, createdAt: true },
+    });
+    return NextResponse.json({ requests });
+  } catch {
+    return NextResponse.json({ error: "Could not load your requests." }, { status: 503 });
+  }
+}
+
 export async function POST(request: NextRequest) {
   const account = await getSessionAccount(request);
   if (!account) return NextResponse.json({ error: "Sign in with Google before sending a request." }, { status: 401 });
