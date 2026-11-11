@@ -367,7 +367,14 @@ export function useDriveSync(args: Args) {
         return;
       }
       if (hasPendingNafl || quotaSlots.length === 0) quotaSlots.push({ kind: "nafl" });
-      const quotaResult = await reserveDriveQuota(driveEmail, quotaSlots, now);
+      let quotaResult;
+      try {
+        quotaResult = await reserveDriveQuota(driveEmail, quotaSlots, now);
+      } catch (error) {
+        setSyncNow(false); setSyncPrayerId("");
+        setDriveStatus(error instanceof Error ? `Could not start Drive sync: ${error.message} Your changes remain saved on this device; retry Sync.` : "Could not start Drive sync. Your changes remain saved on this device; retry Sync.");
+        return;
+      }
       if (!quotaResult.allowed) {
         setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false); setSyncPrayerId("");
         if (quotaResult.reason !== "prayer-window-closed" && quotaResult.reason !== "invalid-prayer") {
