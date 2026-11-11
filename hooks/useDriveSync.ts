@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CustomNafl, DayMarks, GoogleDriveFile, Log, ReadableTrackerDayBackup, TrackerAnalysis, TrackerBackup, TrackerDayBackup, TrackerSummary, UserProfile } from "@/lib/types";
 import { addDays, dateKey, DATE_STRING_REGEX } from "@/lib/dates";
 import { localKeys, localStore, logDateFromKey, marksDateFromKey, customNawafilDateFromKey, isSyncedMarksKey, readCustomNawafil, readJson, writeCustomNawafil, writeJson } from "@/lib/storage/local";
@@ -82,6 +82,7 @@ export function useDriveSync(args: Args) {
   const [driveSyncPulse, setDriveSyncPulse] = useState(0);
   const [syncNow, setSyncNow] = useState(false);
   const [syncPrayerId, setSyncPrayerId] = useState("");
+  const syncTraceId = useRef("");
 
   const readDayLog = (date: string): Log => {
     const value: unknown = readJson<unknown>(localKeys.log(date), {});
@@ -325,11 +326,17 @@ export function useDriveSync(args: Args) {
   };
 
   useEffect(() => {
-    if (!driveToken || !driveFileId || !driveHydrated || !ready || !startDate || (drivePendingChanges === 0 && !syncNow)) return;
+    if (!driveToken || !driveFileId || !driveHydrated || !ready || !startDate || (drivePendingChanges === 0 && !syncNow)) {
+      if (syncNow) console.warn("[drive-sync] Sync effect stopped by a precondition", { traceId: syncTraceId.current, hasToken: !!driveToken, hasSummaryFile: !!driveFileId, hydrated: driveHydrated, ready, hasStartDate: !!startDate, pendingChanges: drivePendingChanges });
+      return;
+    }
     const today = dateKey(new Date());
+    const traceId = syncTraceId.current || `auto-${Date.now()}`;
+    console.info("[drive-sync] Sync effect scheduled", { traceId, prayerId: syncPrayerId || null, immediate: syncNow, pendingChanges: drivePendingChanges, day: dateKey(day) });
     setDriveStatus("Changes saved here; Drive backup is queued.");
     const pendingAtStart = drivePendingChanges;
     const timeout = window.setTimeout(async () => {
+      console.info("[drive-sync] Sync execution started", { traceId });
       setDriveStatus("Saving the daily file and summary to Google Drive…");
       const now = new Date();
       const dirtyFardMarks: Array<{ id: string; mark: DayMarks[string]; day: string }> = [];
@@ -351,6 +358,7 @@ export function useDriveSync(args: Args) {
       };
       const selectedMark = dirtyFardMarks.find(({ id, day: markDay }) => id === syncPrayerId && markDay === dateKey(day));
       if (selectedMark && !windowOpen(selectedMark.mark)) {
+        console.warn("[drive-sync] Sync stopped: selected prayer window closed", { traceId, prayerId: selectedMark.id, prayerDay: selectedMark.day, windowStart: selectedMark.mark.windowStart || null, windowEnd: selectedMark.mark.windowEnd || null, now: now.toISOString() });
         setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false); setSyncPrayerId("");
         return;
       }
@@ -363,19 +371,23 @@ export function useDriveSync(args: Args) {
       const quotaSlots: SyncSlot[] = [...fardSlots.values()];
       const hasPendingNafl = pendingSlots.some((slot) => slot.kind === "nafl");
       if (!quotaSlots.length && dirtyFardMarks.length && !hasPendingNafl) {
+        console.warn("[drive-sync] Sync stopped: no eligible prayer sync slots", { traceId, dirtyFardPrayerIds: dirtyFardMarks.map(({ id }) => id), pendingNafl: hasPendingNafl });
         setDriveStatus(quotaFailureMessage("prayer-window-closed")); setSyncNow(false); setSyncPrayerId("");
         return;
       }
       if (hasPendingNafl || quotaSlots.length === 0) quotaSlots.push({ kind: "nafl" });
       let quotaResult;
       try {
+        console.info("[drive-sync] Checking daily Drive quota", { traceId, slots: quotaSlots.map((slot) => slot.kind === "fard" ? { kind: slot.kind, prayerId: slot.prayerId } : slot), accountConnected: !!driveEmail });
         quotaResult = await reserveDriveQuota(driveEmail, quotaSlots, now);
       } catch (error) {
+        console.error("[drive-sync] Quota check failed", { traceId, error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
         setSyncNow(false); setSyncPrayerId("");
         setDriveStatus(error instanceof Error ? `Could not start Drive sync: ${error.message} Your changes remain saved on this device; retry Sync.` : "Could not start Drive sync. Your changes remain saved on this device; retry Sync.");
         return;
       }
       if (!quotaResult.allowed) {
+        console.warn("[drive-sync] Sync stopped: quota rejected", { traceId, reason: quotaResult.reason });
         setDriveStatus(quotaFailureMessage(quotaResult.reason)); setSyncNow(false); setSyncPrayerId("");
         if (quotaResult.reason !== "prayer-window-closed" && quotaResult.reason !== "invalid-prayer") {
           const tomorrow = new Date(); tomorrow.setHours(24, 0, 3, 0);
@@ -388,15 +400,18 @@ export function useDriveSync(args: Args) {
       const queuedDays = readJson<string[]>(localKeys.drivePendingSyncDays, []);
       const datesToSync = [...new Set([...queuedDays, ...dirtyFardMarks.map(({ day: markDay }) => markDay)].filter((entry) => DATE_STRING_REGEX.test(entry)))];
       if (datesToSync.length === 0) datesToSync.push(date);
+      console.info("[drive-sync] Preparing Drive writes", { traceId, dates: datesToSync, pendingChanges: pendingAtStart, knownDailyFileCount: Object.keys(driveDayFileIds).length });
       void (async () => {
         const savedIds: unknown = readJson<unknown>(localKeys.driveDayFileIds, {});
         const nextIds = { ...(savedIds && typeof savedIds === "object" && !Array.isArray(savedIds) ? savedIds as Record<string, string> : {}), ...driveDayFileIds };
         for (const syncDate of datesToSync) {
+          console.info("[drive-sync] Writing daily Drive file", { traceId, date: syncDate, existingFile: !!nextIds[syncDate] });
           const dayId = await saveDayFile(driveToken, nextIds[syncDate] || null, syncDate, { version: 3, date: syncDate, log: backup.logs[syncDate] || {}, marks: backup.marks?.[syncDate] || {}, customNawafil: backup.customNawafil?.[syncDate] || [] });
           nextIds[syncDate] = dayId;
           writeJson(localKeys.driveDayFileIds, nextIds);
           localStore.setItem(localKeys.driveDayCached(syncDate), new Date().toISOString());
         }
+        console.info("[drive-sync] Writing Drive summary", { traceId, dailyFileCount: datesToSync.length });
         await saveSummaryFile(driveToken, driveFileId, summary(backup, nextIds));
         writeJson(localKeys.driveDayFileIds, nextIds); setDriveDayFileIds(nextIds);
         const analysis = backup.analysis!;
@@ -417,13 +432,18 @@ export function useDriveSync(args: Args) {
           : !usedFardIds.has(entry.prayerId));
         writeJson(localKeys.drivePendingSyncSlots, remainingSlots);
         setDriveStatus(`Drive updated: ${dayFileName(date)} and ${SUMMARY}.`);
+        console.info("[drive-sync] Sync completed", { traceId, dates: datesToSync, remainingPendingChanges: pending });
       })().catch(async (error: unknown) => {
+        console.error("[drive-sync] Drive write failed", { traceId, error: error instanceof Error ? { name: error.name, message: error.message, ...("status" in error ? { status: (error as Error & { status?: number }).status } : {}) } : String(error) });
         await releaseDriveQuota(driveEmail, quotaSlots, now);
         setSyncNow(false); setSyncPrayerId("");
         setDriveStatus(error instanceof Error ? `Drive sync failed: ${error.message} Your changes remain saved on this device; retry Sync.` : "Drive sync failed. Your changes remain saved on this device; retry Sync.");
       });
     }, syncNow ? 0 : DRIVE_SYNC_QUOTA.debounceMs);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      if (syncNow) console.info("[drive-sync] Scheduled sync effect cleaned up", { traceId });
+      window.clearTimeout(timeout);
+    };
   }, [driveToken, driveFileId, driveDayFileIds, driveHydrated, ready, startDate, drivePendingChanges, driveEmail, driveSyncPulse, day, log, marks, customNawafil, qazaDone, qazaDoneOn, syncNow, syncPrayerId]);
 
   // OAuth connection and restore are kept in one hook so no token reaches browser storage.
@@ -578,7 +598,15 @@ export function useDriveSync(args: Args) {
     return downloadQazaYear(port, repository, year);
   }, [driveToken, driveFileId]);
   const requestPrayerSync = (prayerId: string, prayerName: string) => {
-    if (!driveToken || !driveFileId || !marks[prayerId] || marks[prayerId].changedAt === readSynced(dateKey(day))[prayerId]) return;
+    const traceId = globalThis.crypto?.randomUUID?.() || `sync-${Date.now()}`;
+    syncTraceId.current = traceId;
+    const mark = marks[prayerId];
+    const syncedAt = readSynced(dateKey(day))[prayerId];
+    console.info("[drive-sync] Sync button clicked", { traceId, prayerId, prayerName, connected: !!driveEmail, hasToken: !!driveToken, hasSummaryFile: !!driveFileId, hydrated: driveHydrated, ready, hasMark: !!mark, dirty: !!mark && mark.changedAt !== syncedAt, pendingChanges: drivePendingChanges });
+    if (!driveToken || !driveFileId || !driveHydrated || !mark || mark.changedAt === syncedAt || syncNow) {
+      console.warn("[drive-sync] Click ignored: sync prerequisites not met", { traceId, missing: [!driveToken && "access-token", !driveFileId && "summary-file", !driveHydrated && "drive-hydration", !mark && "prayer-mark", !!mark && mark.changedAt === syncedAt && "unsynced-change", syncNow && "sync-already-running"].filter(Boolean) });
+      return;
+    }
     setSyncPrayerId(prayerId); setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
   };
   return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync };
