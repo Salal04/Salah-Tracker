@@ -245,10 +245,13 @@ export function useDriveSync(args: Args) {
       setDriveToken(restored.accessToken);
       setDriveEmail(email);
       setDriveAnalysis(readAnalysis(email));
+      setDriveFileId(summaryId);
+      setDriveHydrated(!!summaryId);
       if (summaryId) {
-        setDriveFileId(summaryId);
         localStore.setItem(localKeys.driveFileId, summaryId);
-        setDriveHydrated(true);
+      } else {
+        setDriveStatus("Google account restored, but the tracker file is not connected yet. Reconnect Google Drive to initialize it.");
+        console.warn("[auth] Google session restored without a tracker summary file; reconnect is needed to initialize Drive sync.");
       }
       localStore.setItem(localKeys.driveEmail, email);
       if (localStore.getItem(localKeys.userProfileCustom) !== "1") {
@@ -260,7 +263,7 @@ export function useDriveSync(args: Args) {
         writeJson(localKeys.userProfile, profile);
         setProfile(profile);
       }
-      setDriveStatus("Google Drive session restored.");
+      if (summaryId) setDriveStatus("Google Drive session restored.");
     }).catch(() => {
       if (active) { console.warn("[auth] Could not restore the saved Google session."); setDriveAuthChecked(true); }
     });
@@ -499,8 +502,16 @@ export function useDriveSync(args: Args) {
           void saveAggregateStats(token, analysis).catch(() => setDriveStatus("Drive is connected, but aggregate stats could not be saved to Neon."));
           return;
         }
-        if (localStore.getItem(localKeys.driveAttemptDay(email)) === today) { setDriveStatus("Drive was already checked today. Your saved local history is still available."); return; }
-        localStore.setItem(localKeys.driveAttemptDay(email), today);
+        if (localStore.getItem(localKeys.driveAttemptDay(email)) === today && sameAccount && cachedId) {
+          const analysis = readAnalysis(email) || calculateTrackerAnalysis(collect(startDate, dateKey(day), log, qazaDone, qazaDoneOn, marks, customNawafil), today);
+          setDriveFileId(cachedId); setDriveToken(token); setDriveEmail(email); setDriveAnalysis(analysis); setDriveFetchedDay(today); setDriveHydrated(true);
+          setDriveStatus("Using the available local tracker copy. Drive was already checked today.");
+          console.info("[auth] Reused cached Drive summary after today's lookup was already attempted.");
+          return;
+        }
+        if (localStore.getItem(localKeys.driveAttemptDay(email)) === today) {
+          console.info("[auth] Retrying Drive lookup because today's previous attempt did not produce a usable summary file.");
+        }
         let file: GoogleDriveFile | undefined;
         if (sameAccount && cachedId && localStore.getItem(localKeys.driveAnalysisVersion) === "3") file = { id: cachedId, name: SUMMARY };
         else {
@@ -567,6 +578,7 @@ export function useDriveSync(args: Args) {
         }
         localStore.setItem(localKeys.driveFileId, id); writeJson(localKeys.driveDayFileIds, ids); setDriveDayFileIds(ids);
         localStore.setItem(localKeys.driveEmail, email); localStore.setItem(localKeys.driveFetchedDay, today);
+        localStore.setItem(localKeys.driveAttemptDay(email), today);
         setDriveFileId(id); setDriveToken(token); setDriveEmail(email); setDriveHydrated(true); setDriveStatus("Drive checked today. Prayer history is cached here; updates sync in batches.");
       } catch (error) { setDriveStatus(error instanceof Error ? error.message : "Could not connect to Google Drive."); }
     } });
@@ -609,5 +621,5 @@ export function useDriveSync(args: Args) {
     }
     setSyncPrayerId(prayerId); setDriveStatus(`Syncing ${prayerName} and other pending changes…`); setSyncNow(true);
   };
-  return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync };
+  return { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, driveHydrated, syncNow, setSyncNow, setDriveStatus, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync };
 }

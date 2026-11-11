@@ -76,7 +76,8 @@ export default function Home() {
   const qaza = useQaza(ready, dateKey(new Date()), todayTimings, monthTimings);
   const { qazaDone, setQazaDone, qazaDoneOn, setQazaDoneOn } = qaza;
   const drive = useDriveSync({ ready, day, startDate, setStartDate, prayerLocation: location, log, marks, customNawafil, qazaDone, qazaDoneOn, setProfile, setLog, setMarks, setCustomNawafil: daily.setCustomNawafil, setSyncedMarks, setQazaDone, setQazaDoneOn });
-  const { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, syncNow, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync } = drive;
+  const { driveToken, driveFileId, driveDayFileIds, driveEmail, driveStatus, driveAnalysis, driveFetchedDay, driveRefreshUsedToday, drivePendingChanges, driveAuthChecked, driveHydrated, syncNow, queueDriveChange, connectGoogleDrive, refreshDriveData, loadDriveDay, loadQazaYear, requestPrayerSync } = drive;
+  const driveConnected = !!driveEmail && !!driveToken && !!driveFileId && driveHydrated;
   useEffect(() => { if (driveToken) void loadDriveDay(dateKey(day)).catch(() => setToast("This day is still available locally; Drive could not refresh it.")); }, [driveToken, driveDayFileIds, day, loadDriveDay]);
   useEffect(() => {
     if (!ready || !driveToken || !driveFileId) return;
@@ -225,7 +226,7 @@ export default function Home() {
   const changeDay = (offset: number) => setDay((prev) => { const next = addDays(prev, offset); if (startDate && dateKey(next) < startDate) return new Date(`${startDate}T12:00:00`); if (dateKey(next) > dateKey(new Date())) return new Date(); return next; });
   if (!ready) return <main className="loading-shell"><span className="brand-mark"><Moon size={20} fill="currentColor" /></span><span>Preparing your prayer journal…</span></main>;
   if (!driveAuthChecked || !driveToken) return <main className="loading-shell"><span className="brand-mark"><Moon size={20} fill="currentColor" /></span><span>Checking your Google Drive sign-in…</span></main>;
-  if (!profile.name.trim()) return <main className="profile-required-shell"><ProfileEditor profile={profile} prayerLocation={location} driveConnected={!!driveEmail && !!driveToken} required onSave={saveProfile} onClose={() => undefined} onConnectGoogle={connectGoogleDrive} /></main>;
+  if (!profile.name.trim()) return <main className="profile-required-shell"><ProfileEditor profile={profile} prayerLocation={location} driveConnected={driveConnected} required onSave={saveProfile} onClose={() => undefined} onConnectGoogle={connectGoogleDrive} /></main>;
 
   return (
     <main className="app-shell">
@@ -244,13 +245,13 @@ export default function Home() {
           </>}
           <div className="date-nav"><button className="date-arrow" onClick={() => changeDay(-1)} aria-label="Previous day" disabled={isStartDay}><ChevronLeft size={18} /></button><div className="date-current"><CalendarDays size={16} /><span>{dateLabel}</span><span className="hijri">{isToday ? "A day to reconnect" : "Your prayer journal"}</span></div><button className="date-arrow" onClick={() => changeDay(1)} aria-label="Next day" disabled={dateKey(day) >= dateKey(new Date())}><ChevronRight size={18} /></button><button className="today-button" onClick={() => setDay(new Date())}>Today</button></div>
           {!driveEmail && <div className="drive-warning" role="note"><CircleHelp size={16} /><p><b>Google Drive isn’t connected.</b> Your prayer record is stored only in this Chrome browser, isn’t included in community rankings, and may be erased if browser data is cleared or Chrome is reset. Connect Drive to back it up.</p></div>}
-          <SignIn profile={profile} accountEmail={driveEmail} connected={!!driveEmail && !!driveToken} status={driveStatus} onSignIn={() => connectGoogleDrive()} onEnableDailySync={() => { window.location.assign("/api/auth/google/start"); }}>
+          <SignIn profile={profile} accountEmail={driveEmail} connected={driveConnected} status={driveStatus} onSignIn={() => connectGoogleDrive()} onEnableDailySync={() => { window.location.assign("/api/auth/google/start"); }}>
             <div className="drive-actions"><button className="drive-button secondary" onClick={refreshDriveData} disabled={driveRefreshUsedToday}><RefreshCw size={14} />{driveRefreshUsedToday ? "Refreshed today" : "Refresh from Drive"}</button><a className="drive-button secondary" href={`https://drive.google.com/file/d/${encodeURIComponent(driveFileId)}/view`} target="_blank" rel="noreferrer"><ExternalLink size={14} />Open summary</a>{driveDayFileIds[dateKey(day)] && <a className="drive-button secondary" href={`https://drive.google.com/file/d/${encodeURIComponent(driveDayFileIds[dateKey(day)])}/view`} target="_blank" rel="noreferrer"><ExternalLink size={14} />Open this day</a>}</div>
           </SignIn>
           <DashboardTabs active={activeTab} onChange={openTab} qazaPendingCount={qaza.pendingConfirmations.length} />
           {activeTab === "today" && <>
             <DailyOverview doneFard={doneFard} progress={progress} />
-            <PrayerListSection fard={fard} relatedByFard={sunnahMuakkadahByFard} otherNawafil={otherNawafil} customNawafil={customNawafil} log={log} marks={marks} syncedMarks={syncedMarks} isToday={isToday} now={clockNow} timings={todayTimings?.timings || null} driveEmail={driveEmail} syncNow={syncNow} onToggle={handlePrayerToggle} onSync={(prayer) => requestPrayerSync(prayer.id, prayer.name)} onAddCustom={(name, rakaat) => { addCustomNafl(name, rakaat); queueDriveChange(); }} />
+            <PrayerListSection fard={fard} relatedByFard={sunnahMuakkadahByFard} otherNawafil={otherNawafil} customNawafil={customNawafil} log={log} marks={marks} syncedMarks={syncedMarks} isToday={isToday} now={clockNow} timings={todayTimings?.timings || null} driveEmail={driveConnected ? driveEmail : ""} syncNow={syncNow} onToggle={handlePrayerToggle} onSync={(prayer) => requestPrayerSync(prayer.id, prayer.name)} onAddCustom={(name, rakaat) => { addCustomNafl(name, rakaat); queueDriveChange(); }} />
           </>}
           {activeTab === "times" && <PrayerTimesTab timingStatus={timingStatus} todayTimings={todayTimings} monthTimings={monthTimings} cityDraft={cityDraft} countryDraft={countryDraft} methodDraft={methodDraft} onCityChange={setCityDraft} onCountryChange={setCountryDraft} onMethodChange={setMethodDraft} onSaveLocation={savePrayerLocation} formatTime={formatPrayerTime} />}
           {activeTab === "qaza" && <><ReviewQueue records={qaza.pendingConfirmations} onAnswer={qaza.answerReview} /><QazaTracker repository={qaza.repository} refreshKey={qaza.refreshKey + syncQueuePulse} onComplete={qaza.complete} onLoadYear={loadQazaYear} /></>}
