@@ -65,7 +65,15 @@ export const detectMissedFardPrayers = async ({ startDate, today, logs, nextFajr
         status: "pending_confirmation",
         year: Number(date.slice(0, 4)),
       };
-      await repository.putRecords([record]);
+      await repository.saveRecordsAndOperations([record], [{
+        operationId: `add-${record.id}`,
+        type: "ADD_QAZA",
+        recordId: record.id,
+        year: record.year,
+        createdAt: record.detectedAt,
+        status: "pending",
+        record,
+      }]);
       created.push(record);
     }
 

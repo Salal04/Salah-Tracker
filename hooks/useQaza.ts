@@ -67,9 +67,10 @@ export function useQaza(ready: boolean, today: string, todayTimings: DayTimings 
       || (todayTimings?.date === today ? todayTimings.timings.Fajr : null);
 
     void (async () => {
-      await detectMissedFardPrayers({ startDate: setup.trackingStartDate, today, logs, nextFajrAt, repository });
+      const detected = await detectMissedFardPrayers({ startDate: setup.trackingStartDate, today, logs, nextFajrAt, repository });
       const [outstanding, pending] = await Promise.all([repository.listOutstanding(), repository.listPendingConfirmation()]);
       if (active) {
+        if (detected.length) setRefreshKey((value) => value + 1);
         setOutstandingQaza(outstanding.filter((record) => isWithinQazaTrackingPeriod(record, setup.trackingStartDate)).map(toItem).filter((item): item is QazaItem => item !== null));
         setPendingConfirmations(pending.filter((record) => isWithinQazaTrackingPeriod(record, setup.trackingStartDate)));
       }
